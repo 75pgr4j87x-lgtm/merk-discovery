@@ -1,11 +1,20 @@
 import React from 'react';
-import { MessageSquare, Send, Sparkles } from 'lucide-react';
+import { MessageCircle, MessageSquare, Send, Sparkles } from 'lucide-react';
+
+type TaskPriority = 'Severe' | 'High' | 'Medium' | 'Low';
+
+const priorityStyle: Record<TaskPriority, string> = {
+  Severe: 'border-red-200 bg-red-50 text-red-800',
+  High: 'border-orange-200 bg-orange-50 text-orange-800',
+  Medium: 'border-amber-200 bg-amber-50 text-amber-900',
+  Low: 'border-[#D9E3D2] bg-[#F1F5EE] text-[#526A48]',
+};
 
 interface ClientProject {
   title: string;
   companyName: string;
   columns: string[];
-  tasks: Array<{ id: string; title: string; description: string; status: string; dueDate: string }>;
+  tasks: Array<{ id: string; title: string; description: string; status: string; dueDate: string; priority: TaskPriority; comments: Array<{ id: string; author: string; message: string; createdAt: string }> }>;
   comments: Array<{ id: string; author: string; message: string; createdAt: string }>;
 }
 
@@ -13,6 +22,7 @@ export const ClientProjectView: React.FC<{ token: string }> = ({ token }) => {
   const [project, setProject] = React.useState<ClientProject | null>(null);
   const [author, setAuthor] = React.useState('');
   const [message, setMessage] = React.useState('');
+  const [activeTaskId, setActiveTaskId] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [sending, setSending] = React.useState(false);
   const [error, setError] = React.useState('');
@@ -45,7 +55,7 @@ export const ClientProjectView: React.FC<{ token: string }> = ({ token }) => {
 
   React.useEffect(() => { loadProject(); }, [loadProject]);
 
-  const sendComment = async (event: React.FormEvent) => {
+  const sendComment = async (event: React.FormEvent, taskId?: string) => {
     event.preventDefault();
     if (!author.trim() || !message.trim()) return;
     setSending(true);
@@ -54,7 +64,7 @@ export const ClientProjectView: React.FC<{ token: string }> = ({ token }) => {
       const response = await fetch('/api/client-project/comments', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, author, message }),
+        body: JSON.stringify({ token, author, message, taskId }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Could not send comment.');
@@ -84,10 +94,22 @@ export const ClientProjectView: React.FC<{ token: string }> = ({ token }) => {
           <div className="flex items-start gap-3 overflow-x-auto pb-3">
             {project.columns.map((column) => <section key={column} className="merakifos-column min-h-52 min-w-[230px] flex-1 border border-[#E5EADF] bg-[#F1F2EC]">
               <h3 className="border-b border-[#E5EADF] bg-white px-3 py-2 text-xs font-semibold">{column}<span className="ml-2 font-normal text-[#7C8B5F]">{project.tasks.filter((task) => task.status === column).length}</span></h3>
-              <div className="space-y-2 p-2">{project.tasks.filter((task) => task.status === column).map((task) => <article key={task.id} className="border border-[#E5EADF] bg-white p-3">
-                <h4 className="text-xs font-semibold">{task.title}</h4>
+              <div className="space-y-2 p-2">{project.tasks.filter((task) => task.status === column).map((task) => <article key={task.id} className="min-w-0 border border-[#E5EADF] bg-white p-3">
+                <h4 className="whitespace-normal break-words text-sm font-semibold leading-snug">{task.title}</h4>
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                  <span className={`inline-flex rounded-xl border px-2 py-1 text-xs font-medium ${priorityStyle[task.priority || 'Medium']}`}>Priority: {task.priority || 'Medium'}</span>
+                  <button onClick={() => { setActiveTaskId(activeTaskId === task.id ? null : task.id); setError(''); }} className="inline-flex items-center gap-1.5 rounded-xl border border-[#E5EADF] bg-white px-2.5 py-1.5 text-xs text-[#3F4A32] hover:bg-[#FAF6F1]" aria-label={`Open discussion for ${task.title}`}><MessageCircle size={14} className="text-[#7C8B5F]" />{task.comments.length || 'Comment'}</button>
+                </div>
                 {task.description && <p className="mt-2 whitespace-pre-wrap text-[11px] leading-relaxed text-[#59645B]">{task.description}</p>}
                 {task.dueDate && <div className="mt-3 border-t border-[#E5E9E3] pt-2 text-[10px] text-[#687268]">Target: {new Date(`${task.dueDate}T12:00:00`).toLocaleDateString()}</div>}
+                {activeTaskId === task.id && <section className="mt-3 border-t border-[#E5EADF] pt-3" aria-label={`Discussion for ${task.title}`}>
+                  <div className="mb-2 max-h-36 space-y-2 overflow-y-auto">{task.comments.length ? task.comments.map((comment) => <article key={comment.id} className="rounded-xl bg-[#FAF6F1] p-2.5"><div className="mb-1 flex items-center justify-between gap-2"><strong className="text-xs">{comment.author}</strong><time className="text-[10px] text-[#7C8B5F]">{new Date(comment.createdAt).toLocaleDateString()}</time></div><p className="whitespace-pre-wrap break-words text-xs">{comment.message}</p></article>) : <p className="text-xs text-[#7C8B5F]">No comments yet.</p>}</div>
+                  <form onSubmit={(event) => sendComment(event, task.id)} className="space-y-2">
+                    <label className="block text-[11px] text-[#3F4A32]">Your name<input value={author} onChange={(event) => setAuthor(event.target.value)} maxLength={80} required className="mt-1 w-full rounded-xl border border-[#E5EADF] bg-white px-2.5 py-2 text-xs text-[#3F4A32]" /></label>
+                    <label className="block text-[11px] text-[#3F4A32]">Task comment<textarea value={message} onChange={(event) => setMessage(event.target.value)} maxLength={1000} required rows={2} className="mt-1 w-full resize-y rounded-xl border border-[#E5EADF] bg-white px-2.5 py-2 text-xs text-[#3F4A32]" placeholder="Write a task update or question" /></label>
+                    <button disabled={sending} className="inline-flex items-center gap-2 rounded-xl bg-[#3F4A32] px-3 py-2 text-xs text-[#FAF6F1] disabled:opacity-50"><Send size={13} className="text-[#D9A441]" />{sending ? 'Sending...' : 'Send'}</button>
+                  </form>
+                </section>}
               </article>)}</div>
             </section>)}
           </div>

@@ -97,9 +97,10 @@ const ownerEmail = (process.env.STUDIO_OWNER_EMAIL || 'kelvensarbah@gmail.com').
       tasks: taskTitles.map((title, index) => ({
         id: randomUUID(),
         title,
-        description: index === 0 ? `Project outcome: ${submission.successOutcome || submission.primaryGoal || 'Deliver the approved brief.'}` : '',
+        description: index === 0 ? summarizeTaskDescription(submission.successOutcome || submission.primaryGoal || 'Deliver the approved brief.') : '',
         status: 'Backlog',
         dueDate: '',
+        priority: inferTaskPriority(title),
         estimatedEffortDays: estimateEffortDays(title),
         amount: 0,
       })),
@@ -128,6 +129,21 @@ const ownerEmail = (process.env.STUDIO_OWNER_EMAIL || 'kelvensarbah@gmail.com').
     if (/launch|handoff/.test(work)) return 2;
     if (/client review/.test(work)) return 2;
     return 3;
+  }
+
+  function inferTaskPriority(title: string): ProjectTask['priority'] {
+    const work = title.toLowerCase();
+    if (/security|privacy|compliance|payment|checkout|data migration|launch blocker/.test(work)) return 'Severe';
+    if (/integration|automation|subscription|e-commerce|storefront|database|accessibility/.test(work)) return 'High';
+    if (/launch|handoff|client review|quality|qa|performance/.test(work)) return 'Low';
+    if (/discovery|research|content structure|strategy/.test(work)) return 'Medium';
+    return 'Medium';
+  }
+
+  function summarizeTaskDescription(value: unknown): string {
+    if (typeof value !== 'string') return '';
+    const sentences = value.replace(/\s+/g, ' ').trim().split(/(?<=[.!?])\s+/).slice(0, 2);
+    return sentences.join(' ').split(' ').filter(Boolean).slice(0, 20).join(' ');
   }
 
   function allocateProjectFee(tasks: ProjectTask[], total: number): ProjectTask[] {
@@ -181,6 +197,8 @@ const ownerEmail = (process.env.STUDIO_OWNER_EMAIL || 'kelvensarbah@gmail.com').
           projectEndDate: project.projectEndDate || '',
           tasks: project.tasks.map((task) => ({
             ...task,
+            description: summarizeTaskDescription(task.description),
+            priority: ['Severe', 'High', 'Medium', 'Low'].includes(task.priority) ? task.priority : inferTaskPriority(task.title),
             estimatedEffortDays: Number.isFinite(task.estimatedEffortDays) ? task.estimatedEffortDays : estimateEffortDays(task.title),
           })),
         };
@@ -211,9 +229,10 @@ const ownerEmail = (process.env.STUDIO_OWNER_EMAIL || 'kelvensarbah@gmail.com').
       const cleanTasks: ProjectTask[] = tasks.map((task: any) => ({
         id: typeof task.id === 'string' ? task.id.slice(0, 80) : randomUUID(),
         title: String(task.title || '').trim().slice(0, 160),
-        description: String(task.description || '').trim().slice(0, 2000),
+        description: summarizeTaskDescription(task.description),
         status: cleanColumns.includes(task.status) ? task.status : cleanColumns[0],
         dueDate: '',
+        priority: ['Severe', 'High', 'Medium', 'Low'].includes(task.priority) ? task.priority : inferTaskPriority(String(task.title || '')),
         estimatedEffortDays: estimateEffortDays(String(task.title || '')),
         amount: Number.isFinite(Number(task.amount)) ? Math.max(0, Number(task.amount)) : 0,
       })).filter((task: ProjectTask) => task.title);
@@ -279,8 +298,16 @@ const ownerEmail = (process.env.STUDIO_OWNER_EMAIL || 'kelvensarbah@gmail.com').
         title: project.title,
         companyName: project.companyName,
         columns: project.columns,
-        tasks: project.tasks.map(({ id, title, description, status, dueDate }) => ({ id, title, description, status, dueDate })),
-        comments: project.comments,
+        tasks: project.tasks.map(({ id, title, description, status, dueDate, priority }) => ({
+          id,
+          title,
+          description: summarizeTaskDescription(description),
+          status,
+          dueDate,
+          priority: ['Severe', 'High', 'Medium', 'Low'].includes(priority) ? priority : inferTaskPriority(title),
+          comments: project.comments.filter((comment) => comment.taskId === id),
+        })),
+        comments: project.comments.filter((comment) => !comment.taskId),
       });
     } catch (error) {
       console.error('Failed to load shared client project:', error);
@@ -290,14 +317,15 @@ const ownerEmail = (process.env.STUDIO_OWNER_EMAIL || 'kelvensarbah@gmail.com').
 
   app.post('/api/client-project/comments', async (req, res) => {
     try {
-      const { token, author, message } = req.body || {};
+      const { token, author, message, taskId } = req.body || {};
       if (typeof token !== 'string' || token.length > 100) return res.status(404).json({ error: 'Project link not found.' });
       const project = await findProjectByShareTokenHash(hashShareToken(token));
       if (!project) return res.status(404).json({ error: 'Project link not found.' });
+      if (taskId && !project.tasks.some((task) => task.id === taskId)) return res.status(404).json({ error: 'Task not found.' });
       const cleanAuthor = typeof author === 'string' ? author.trim().slice(0, 80) : '';
       const cleanMessage = typeof message === 'string' ? message.trim().slice(0, 1000) : '';
       if (!cleanAuthor || !cleanMessage) return res.status(400).json({ error: 'Enter your name and a comment.' });
-      const comment: ProjectComment = { id: randomUUID(), author: cleanAuthor, message: cleanMessage, createdAt: new Date().toISOString() };
+      const comment: ProjectComment = { id: randomUUID(), taskId: typeof taskId === 'string' ? taskId : undefined, author: cleanAuthor, message: cleanMessage, createdAt: new Date().toISOString() };
       project.comments = [...project.comments, comment].slice(-200);
       project.updatedAt = new Date().toISOString();
       await saveStudioProject(project);
@@ -305,6 +333,33 @@ const ownerEmail = (process.env.STUDIO_OWNER_EMAIL || 'kelvensarbah@gmail.com').
     } catch (error) {
       console.error('Failed to save client project comment:', error);
       return res.status(500).json({ error: 'Could not save your comment.' });
+    }
+  });
+
+  app.post('/api/projects/:id/comments', requireStudioOwner, async (req, res) => {
+    try {
+      const project = await loadStudioProject(req.params.id);
+      if (!project) return res.status(404).json({ error: 'Project not found.' });
+      const { taskId, message } = req.body || {};
+      if (typeof taskId !== 'string' || !project.tasks.some((task) => task.id === taskId)) {
+        return res.status(404).json({ error: 'Task not found.' });
+      }
+      const cleanMessage = typeof message === 'string' ? message.trim().slice(0, 1000) : '';
+      if (!cleanMessage) return res.status(400).json({ error: 'Enter a comment.' });
+      const comment: ProjectComment = {
+        id: randomUUID(),
+        taskId,
+        author: 'Studio',
+        message: cleanMessage,
+        createdAt: new Date().toISOString(),
+      };
+      project.comments = [...project.comments, comment].slice(-500);
+      project.updatedAt = new Date().toISOString();
+      await saveStudioProject(project);
+      return res.status(201).json({ comment });
+    } catch (error) {
+      console.error('Failed to save Studio task comment:', error);
+      return res.status(500).json({ error: 'Could not save task comment.' });
     }
   });
 

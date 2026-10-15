@@ -1,5 +1,5 @@
 import React from 'react';
-import { CalendarDays, Check, Clipboard, GripVertical, Plus, Printer, Save, Trash2, X } from 'lucide-react';
+import { CalendarDays, Check, Clipboard, GripVertical, MessageCircle, Plus, Printer, Save, Trash2, X } from 'lucide-react';
 import { studioFetch } from '../../services/auth';
 
 interface ProjectTask {
@@ -8,12 +8,14 @@ interface ProjectTask {
   description: string;
   status: string;
   dueDate: string;
+  priority: 'Severe' | 'High' | 'Medium' | 'Low';
   estimatedEffortDays: number;
   amount: number;
 }
 
 interface ProjectComment {
   id: string;
+  taskId?: string;
   author: string;
   message: string;
   createdAt: string;
@@ -46,6 +48,13 @@ interface ProjectWorkspaceProps {
 }
 
 const currencies = ['USD', 'CAD', 'GBP', 'EUR', 'GHS'];
+const priorities: ProjectTask['priority'][] = ['Severe', 'High', 'Medium', 'Low'];
+const priorityStyle: Record<ProjectTask['priority'], string> = {
+  Severe: 'border-red-200 bg-red-50 text-red-800',
+  High: 'border-orange-200 bg-orange-50 text-orange-800',
+  Medium: 'border-amber-200 bg-amber-50 text-amber-900',
+  Low: 'border-[#D9E3D2] bg-[#F1F5EE] text-[#526A48]',
+};
 const money = (amount: number, currency: string) => new Intl.NumberFormat(undefined, {
   style: 'currency', currency, maximumFractionDigits: 2,
 }).format(amount || 0);
@@ -72,6 +81,14 @@ const estimateEffortDays = (title: string) => {
   if (/accessibility|performance|qa|quality|discovery|research|strategy/.test(work)) return 3;
   if (/launch|handoff|client review/.test(work)) return 2;
   return 3;
+};
+
+const inferPriority = (title: string): ProjectTask['priority'] => {
+  const work = title.toLowerCase();
+  if (/security|privacy|compliance|payment|checkout|data migration|launch blocker/.test(work)) return 'Severe';
+  if (/integration|automation|subscription|e-commerce|storefront|database|accessibility/.test(work)) return 'High';
+  if (/launch|handoff|client review|quality|qa|performance/.test(work)) return 'Low';
+  return 'Medium';
 };
 
 const scheduleTaskDates = (tasks: ProjectTask[], startDate: string, endDate: string) => {
@@ -102,6 +119,9 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
   const [shareLink, setShareLink] = React.useState('');
   const [notice, setNotice] = React.useState('');
   const [draggedTask, setDraggedTask] = React.useState<string | null>(null);
+  const [activeCommentTaskId, setActiveCommentTaskId] = React.useState<string | null>(null);
+  const [commentDraft, setCommentDraft] = React.useState('');
+  const [commentSending, setCommentSending] = React.useState(false);
 
   React.useEffect(() => {
     let active = true;
@@ -172,7 +192,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
 
   const addTask = (status: string) => changeProject((current) => {
     const tasks = distributeProjectFee(
-      [...current.tasks, { id: crypto.randomUUID(), title: 'New task', description: '', status, dueDate: '', estimatedEffortDays: 3, amount: 0 }],
+      [...current.tasks, { id: crypto.randomUUID(), title: 'New task', description: '', status, dueDate: '', priority: 'Medium', estimatedEffortDays: 3, amount: 0 }],
       current.projectCharge,
     );
     return { ...current, tasks: scheduleTaskDates(tasks, current.projectStartDate, current.projectEndDate) };
@@ -181,12 +201,39 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
   const patchTask = (taskId: string, patch: Partial<ProjectTask>) => changeProject((current) => {
     const tasks = distributeProjectFee(
       current.tasks.map((task) => task.id === taskId
-        ? { ...task, ...patch, estimatedEffortDays: patch.title === undefined ? task.estimatedEffortDays : estimateEffortDays(patch.title) }
+        ? {
+            ...task,
+            ...patch,
+            estimatedEffortDays: patch.title === undefined ? task.estimatedEffortDays : estimateEffortDays(patch.title),
+            priority: patch.priority || (patch.title === undefined ? task.priority : inferPriority(patch.title)),
+          }
         : task),
       current.projectCharge,
     );
     return { ...current, tasks: scheduleTaskDates(tasks, current.projectStartDate, current.projectEndDate) };
   });
+
+  const sendTaskComment = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!activeCommentTaskId || !commentDraft.trim()) return;
+    setCommentSending(true);
+    setNotice('');
+    try {
+      const response = await studioFetch(`/api/projects/${encodeURIComponent(submissionId)}/comments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskId: activeCommentTaskId, message: commentDraft }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not add task comment.');
+      setProject((current) => current ? { ...current, comments: [...current.comments, data.comment] } : current);
+      setCommentDraft('');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Could not add task comment.');
+    } finally {
+      setCommentSending(false);
+    }
+  };
 
   const updateCharge = (value: number) => changeProject((current) => {
     const safeValue = Math.max(0, Number.isFinite(value) ? value : 0);
@@ -262,13 +309,29 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
                 <button onClick={() => removeColumn(columnIndex)} title="Remove stage" className="p-1 text-[#6F786F] hover:text-red-700"><Trash2 size={13} /></button>
               </div>
               <div className="min-h-36 space-y-2 p-2">
-                {project.tasks.filter((task) => task.status === column).map((task) => <article key={task.id} draggable onDragStart={() => setDraggedTask(task.id)} onDragEnd={() => setDraggedTask(null)} className="border border-[#D9DED7] bg-white p-3 shadow-sm">
+                {project.tasks.filter((task) => task.status === column).map((task) => <article key={task.id} draggable onDragStart={() => setDraggedTask(task.id)} onDragEnd={() => setDraggedTask(null)} className="min-w-0 border border-[#D9DED7] bg-white p-3 shadow-sm">
                   <div className="mb-2 flex items-center gap-1">
                     <GripVertical size={14} className="shrink-0 cursor-grab text-[#899188]" />
-                    <input value={task.title} onChange={(event) => patchTask(task.id, { title: event.target.value })} className="min-w-0 flex-1 text-xs font-semibold outline-none" aria-label="Task title" />
-                    <button onClick={() => updateSchedule((current) => ({ ...current, tasks: distributeProjectFee(current.tasks.filter((item) => item.id !== task.id), current.projectCharge) }))} title="Delete task" className="p-1 text-[#7C8B5F] hover:text-red-700"><Trash2 size={13} /></button>
+                    <textarea rows={2} maxLength={160} value={task.title} onChange={(event) => patchTask(task.id, { title: event.target.value })} className="min-h-10 min-w-0 flex-1 resize-y whitespace-pre-wrap break-words text-xs font-semibold leading-snug outline-none" aria-label="Task title" />
+                    <button onClick={() => updateSchedule((current) => ({
+                      ...current,
+                      tasks: distributeProjectFee(current.tasks.filter((item) => item.id !== task.id), current.projectCharge),
+                      comments: current.comments.filter((comment) => comment.taskId !== task.id),
+                    }))} title="Delete task" className="p-1 text-[#7C8B5F] hover:text-red-700"><Trash2 size={13} /></button>
                   </div>
-                  <textarea value={task.description} onChange={(event) => patchTask(task.id, { description: event.target.value })} placeholder="Scope, notes, or acceptance criteria" rows={2} className="mb-2 w-full resize-y border border-[#E2E6E0] px-2 py-1.5 text-[11px]" />
+                  {task.description && <p className="mb-2 whitespace-normal break-words text-xs leading-relaxed text-[#59645B]">{task.description}</p>}
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <label className={`inline-flex items-center rounded-xl border px-2 py-1 text-xs font-medium ${priorityStyle[task.priority || 'Medium']}`}>
+                      <span className="mr-1">Priority</span>
+                      <select value={task.priority || 'Medium'} onChange={(event) => patchTask(task.id, { priority: event.target.value as ProjectTask['priority'] })} aria-label={`Priority for ${task.title}`} className="max-w-24 bg-transparent font-semibold outline-none">
+                        {priorities.map((priority) => <option key={priority} value={priority}>{priority}</option>)}
+                      </select>
+                    </label>
+                    <button onClick={() => { setActiveCommentTaskId(task.id); setCommentDraft(''); }} className="inline-flex items-center gap-1.5 rounded-xl border border-[#E5EADF] bg-white px-2.5 py-1.5 text-xs text-[#3F4A32] hover:bg-[#FAF6F1]" aria-label={`Open comments for ${task.title}`}>
+                      <MessageCircle size={14} className="text-[#7C8B5F]" />
+                      {project.comments.filter((comment) => comment.taskId === task.id).length || 'Comment'}
+                    </button>
+                  </div>
                   <div className="flex items-center gap-2 border-t border-[#E5EADF] pt-2 text-xs text-[#3F4A32]"><CalendarDays size={14} className="text-[#7C8B5F]" />Target date: {task.dueDate ? new Date(`${task.dueDate}T12:00:00`).toLocaleDateString() : 'Set project dates above'}</div>
                 </article>)}
                 <button onClick={() => addTask(column)} className="flex w-full items-center justify-center gap-1 rounded-xl border border-dashed border-[#BFC8BE] py-2 text-xs text-[#3F4A32] hover:bg-white"><Plus size={14} /> Add task</button>
@@ -333,6 +396,29 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
           <div className="mt-10 border-t border-[#E5E9E3] pt-4 text-center text-[10px] uppercase tracking-[0.14em] text-[#7C867D]">Merakifos Studio · Thoughtful work, made with care</div>
           </section>
         </section>}
+        {activeCommentTaskId && (() => {
+          const task = project.tasks.find((item) => item.id === activeCommentTaskId);
+          if (!task) return null;
+          const taskComments = project.comments.filter((comment) => comment.taskId === activeCommentTaskId);
+          return <div className="fixed inset-0 z-[60] grid place-items-center bg-black/40 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setActiveCommentTaskId(null); }}>
+            <section role="dialog" aria-modal="true" aria-labelledby="task-comments-title" className="w-full max-w-lg rounded-2xl border border-[#E5EADF] bg-white p-5 shadow-xl">
+              <div className="mb-4 flex items-start justify-between gap-3 border-b border-[#E5EADF] pb-3">
+                <div className="min-w-0"><p className="text-xs text-[#7C8B5F]">Task discussion</p><h2 id="task-comments-title" className="break-words text-base font-semibold">{task.title}</h2></div>
+                <button onClick={() => setActiveCommentTaskId(null)} aria-label="Close task comments" className="p-2 text-[#7C8B5F]"><X size={17} /></button>
+              </div>
+              <div className="mb-4 max-h-64 space-y-3 overflow-y-auto">
+                {taskComments.length ? taskComments.map((comment) => <article key={comment.id} className="rounded-xl bg-[#FAF6F1] p-3">
+                  <div className="mb-1 flex items-center justify-between gap-2"><strong className="text-xs">{comment.author}</strong><time className="text-[11px] text-[#7C8B5F]">{new Date(comment.createdAt).toLocaleString()}</time></div>
+                  <p className="whitespace-pre-wrap break-words text-sm">{comment.message}</p>
+                </article>) : <p className="text-sm text-[#7C8B5F]">No comments on this task yet.</p>}
+              </div>
+              <form onSubmit={sendTaskComment} className="space-y-3">
+                <label className="block text-xs text-[#3F4A32]">Add a comment<textarea autoFocus required maxLength={1000} rows={3} value={commentDraft} onChange={(event) => setCommentDraft(event.target.value)} className="mt-1 w-full rounded-xl border border-[#E5EADF] px-3 py-2 text-sm" placeholder="Write a task update or question" /></label>
+                <div className="flex justify-end"><button disabled={commentSending || !commentDraft.trim()} className="inline-flex items-center gap-2 rounded-xl bg-[#3F4A32] px-4 py-2.5 text-sm text-[#FAF6F1] disabled:opacity-50"><MessageCircle size={15} className="text-[#D9A441]" />{commentSending ? 'Sending...' : 'Add comment'}</button></div>
+              </form>
+            </section>
+          </div>;
+        })()}
       </main>
     </div>
   );

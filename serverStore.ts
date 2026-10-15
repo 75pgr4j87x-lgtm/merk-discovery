@@ -20,12 +20,14 @@ export interface ProjectTask {
   description: string;
   status: string;
   dueDate: string;
+  priority: 'Severe' | 'High' | 'Medium' | 'Low';
   estimatedEffortDays: number;
   amount: number;
 }
 
 export interface ProjectComment {
   id: string;
+  taskId?: string;
   author: string;
   message: string;
   createdAt: string;
