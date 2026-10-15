@@ -1,0 +1,151 @@
+@import "tailwindcss";
+
+@theme {
+  --font-heading: 'Bricolage Grotesque', system-ui, -apple-system, sans-serif;
+  --font-body: 'Hanken Grotesk', system-ui, -apple-system, sans-serif;
+  --font-sans: 'Hanken Grotesk', system-ui, -apple-system, sans-serif;
+
+  --color-meraki-sage: #7C8B5F;
+  --color-meraki-olive: #3F4A32;
+  --color-meraki-ochre: #D9A441;
+  --color-meraki-neutral: #FAF6F1;
+  --color-meraki-border: #E5EADF;
+}
+
+@layer base {
+  :root {
+    font-family: 'Hanken Grotesk', system-ui, -apple-system, sans-serif;
+    font-weight: 300;
+  }
+
+  body {
+    font-family: 'Hanken Grotesk', system-ui, -apple-system, sans-serif;
+    font-weight: 300;
+    background-color: #FAF6F1;
+    color: #3F4A32;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Bricolage Grotesque', system-ui, -apple-system, sans-serif;
+    font-weight: 400;
+    letter-spacing: -0.015em;
+    color: #3F4A32;
+  }
+
+  button {
+    font-family: 'Hanken Grotesk', system-ui, -apple-system, sans-serif;
+  }
+
+  input, textarea, select {
+    font-family: 'Hanken Grotesk', system-ui, -apple-system, sans-serif;
+    font-weight: 300;
+    color: #3F4A32;
+  }
+
+  ::selection {
+    background-color: rgba(124, 139, 95, 0.25);
+    color: #3F4A32;
+  }
+}
+
+/* Explicit Merakifos Typography Enforcement */
+.font-heading,
+h1,
+h2,
+h3,
+h4 {
+  font-family: 'Bricolage Grotesque', system-ui, -apple-system, sans-serif !important;
+  font-weight: 400 !important;
+}
+
+.font-body,
+p,
+span,
+label,
+input,
+textarea,
+select {
+  font-family: 'Hanken Grotesk', system-ui, -apple-system, sans-serif;
+}
+
+button {
+  font-family: 'Hanken Grotesk', system-ui, -apple-system, sans-serif !important;
+}
+
+.font-light {
+  font-weight: 300 !important;
+}
+
+.font-normal {
+  font-weight: 400 !important;
+}
+
+/* Google Sign-in button standard styles */
+.gsi-material-button {
+  -moz-user-select: none;
+  -webkit-user-select: none;
+  -ms-user-select: none;
+  background-color: #ffffff;
+  border: 1px solid #E5EADF;
+  border-radius: 9999px;
+  box-sizing: border-box;
+  color: #3F4A32;
+  cursor: pointer;
+  font-family: 'Hanken Grotesk', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+  font-size: 14px;
+  font-weight: 400;
+  height: 42px;
+  letter-spacing: 0.25px;
+  outline: none;
+  overflow: hidden;
+  padding: 0 18px;
+  position: relative;
+  text-align: center;
+  transition: all .2s cubic-bezier(0.4, 0, 0.2, 1);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gsi-material-button .gsi-material-button-icon {
+  height: 20px;
+  margin-right: 12px;
+  min-width: 20px;
+  width: 20px;
+}
+
+.gsi-material-button .gsi-material-button-content-wrapper {
+  align-items: center;
+  display: flex;
+  flex-direction: row;
+  height: 100%;
+  justify-content: space-between;
+  position: relative;
+  width: 100%;
+}
+
+.gsi-material-button .gsi-material-button-contents {
+  flex-grow: 1;
+  font-weight: 400;
+  font-family: 'Hanken Grotesk', system-ui, sans-serif !important;
+}
+
+.gsi-material-button:hover {
+  background-color: #FAF6F1;
+  border-color: #7C8B5F;
+  box-shadow: 0 2px 6px rgba(63, 74, 50, 0.08);
+}
+
+@media print {
+  body {
+    background-color: #FAF6F1 !important;
+    color: #3F4A32 !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  header, footer, button, .print\:hidden {
+    display: none !important;
+  }
+}

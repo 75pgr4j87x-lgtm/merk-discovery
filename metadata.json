@@ -1,0 +1,6 @@
+{
+  "name": "MERAKIFOS • Studio Discovery Intake & Brief Architecture",
+  "description": "Minimalist, client-facing website discovery intake and brief generator by Merakifos studio.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

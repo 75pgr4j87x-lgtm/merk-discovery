@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "installCommand": "bun install",
+  "buildCommand": "bun run build",
+  "outputDirectory": "public",
+  "rewrites": [
+    {
+      "source": "/studio",
+      "destination": "/"
+    },
+    {
+      "source": "/studio/:path*",
+      "destination": "/"
+    }
+  ]
+}

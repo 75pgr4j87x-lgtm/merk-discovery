@@ -1,0 +1,18 @@
+node_modules/
+build/
+dist/
+public/
+coverage/
+.vercel/
+.DS_Store
+*.log
+.env*
+!.env.example
+submissions.json
+email_outbox.json
+merakifos_client_responses.xlsx
+# Firebase & Secrets
+*firebase*.json
+!firebase-applet-config.json
+*serviceAccount*.json
+.vercel
