@@ -1,5 +1,6 @@
 import React from 'react';
 import { MessageCircle, MessageSquare, Send, Sparkles } from 'lucide-react';
+import { ProjectJourneyProgress } from './ProjectJourneyProgress';
 
 type TaskPriority = 'Severe' | 'High' | 'Medium' | 'Low';
 
@@ -14,7 +15,7 @@ interface ClientProject {
   title: string;
   companyName: string;
   columns: string[];
-  tasks: Array<{ id: string; title: string; description: string; status: string; dueDate: string; priority: TaskPriority; comments: Array<{ id: string; author: string; message: string; createdAt: string }> }>;
+  tasks: Array<{ id: string; title: string; description: string; status: string; dueDate: string; priority: TaskPriority; estimatedEffortDays: number; comments: Array<{ id: string; author: string; message: string; createdAt: string }> }>;
   comments: Array<{ id: string; author: string; message: string; createdAt: string }>;
 }
 
@@ -23,6 +24,7 @@ export const ClientProjectView: React.FC<{ token: string }> = ({ token }) => {
   const [author, setAuthor] = React.useState('');
   const [message, setMessage] = React.useState('');
   const [activeTaskId, setActiveTaskId] = React.useState<string | null>(null);
+  const [selectedJourneyStage, setSelectedJourneyStage] = React.useState<number | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [sending, setSending] = React.useState(false);
   const [error, setError] = React.useState('');
@@ -91,8 +93,18 @@ export const ClientProjectView: React.FC<{ token: string }> = ({ token }) => {
       <div className="mx-auto grid max-w-6xl gap-8 px-5 py-8 lg:grid-cols-[1fr_320px] sm:px-10">
         <section>
           <div className="mb-4 flex items-end justify-between"><div><h2 className="text-base font-semibold">Workflow</h2><p className="mt-1 text-xs text-[#3F4A32]">Current milestones and target dates</p></div><button onClick={loadProject} className="border border-[#E5EADF] bg-white px-3 py-2 text-xs text-[#3F4A32] hover:bg-[#F1F2EC]">Refresh</button></div>
+          <div className="mb-5">
+            <ProjectJourneyProgress
+              columns={project.columns}
+              tasks={project.tasks}
+              onSelectStage={(index) => {
+                setSelectedJourneyStage(index);
+                document.getElementById(`client-stage-${index}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+              }}
+            />
+          </div>
           <div className="flex items-start gap-3 overflow-x-auto pb-3">
-            {project.columns.map((column) => <section key={column} className="merakifos-column min-h-52 min-w-[230px] flex-1 border border-[#E5EADF] bg-[#F1F2EC]">
+            {project.columns.map((column, columnIndex) => <section key={column} id={`client-stage-${columnIndex}`} className={`merakifos-column min-h-52 min-w-[230px] flex-1 border border-[#E5EADF] bg-[#F1F2EC] transition-shadow ${selectedJourneyStage === columnIndex ? 'ring-2 ring-[#D9A441]' : ''}`}>
               <h3 className="border-b border-[#E5EADF] bg-white px-3 py-2 text-xs font-semibold">{column}<span className="ml-2 font-normal text-[#7C8B5F]">{project.tasks.filter((task) => task.status === column).length}</span></h3>
               <div className="space-y-2 p-2">{project.tasks.filter((task) => task.status === column).map((task) => <article key={task.id} className="min-w-0 border border-[#E5EADF] bg-white p-3">
                 <h4 className="whitespace-normal break-words text-sm font-semibold leading-snug">{task.title}</h4>

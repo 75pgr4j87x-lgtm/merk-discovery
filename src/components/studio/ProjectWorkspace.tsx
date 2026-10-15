@@ -1,6 +1,7 @@
 import React from 'react';
 import { CalendarDays, Check, Clipboard, GripVertical, MessageCircle, Plus, Printer, Save, Trash2, X } from 'lucide-react';
 import { studioFetch } from '../../services/auth';
+import { ProjectJourneyProgress } from '../ProjectJourneyProgress';
 
 interface ProjectTask {
   id: string;
@@ -122,6 +123,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
   const [activeCommentTaskId, setActiveCommentTaskId] = React.useState<string | null>(null);
   const [commentDraft, setCommentDraft] = React.useState('');
   const [commentSending, setCommentSending] = React.useState(false);
+  const [selectedJourneyStage, setSelectedJourneyStage] = React.useState<number | null>(null);
 
   React.useEffect(() => {
     let active = true;
@@ -298,11 +300,21 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
           <label className="workspace-no-print mb-4 block max-w-xl text-xs text-[#6F786F]">Project name
             <input value={project.title} onChange={(event) => changeProject((current) => ({ ...current, title: event.target.value }))} className="mt-1 block w-full border border-[#CDD4CC] bg-white px-3 py-2 text-sm text-[#25312B]" />
           </label>
+          <div className="workspace-no-print mb-5">
+            <ProjectJourneyProgress
+              columns={project.columns}
+              tasks={project.tasks}
+              onSelectStage={(index) => {
+                setSelectedJourneyStage(index);
+                document.getElementById(`studio-stage-${index}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+              }}
+            />
+          </div>
           <div className="flex items-start gap-3 overflow-x-auto pb-4">
             {project.columns.map((column, columnIndex) => <section key={`${columnIndex}-${column}`} onDragOver={(event) => event.preventDefault()} onDrop={() => {
               if (draggedTask) patchTask(draggedTask, { status: column });
               setDraggedTask(null);
-            }} className="merakifos-column min-w-[280px] max-w-[340px] flex-1 border border-[#E5EADF] bg-[#F1F2EC]">
+            }} id={`studio-stage-${columnIndex}`} className={`merakifos-column min-w-[280px] max-w-[340px] flex-1 border border-[#E5EADF] bg-[#F1F2EC] transition-shadow ${selectedJourneyStage === columnIndex ? 'ring-2 ring-[#D9A441]' : ''}`}>
               <div className="flex items-center gap-1 border-b border-[#D9DED7] bg-white p-2">
                 <input aria-label="Stage name" value={column} onChange={(event) => renameColumn(columnIndex, event.target.value)} className="min-w-0 flex-1 bg-transparent px-1 py-1 text-xs font-semibold" />
                 <span className="text-[10px] text-[#6F786F]">{project.tasks.filter((task) => task.status === column).length}</span>

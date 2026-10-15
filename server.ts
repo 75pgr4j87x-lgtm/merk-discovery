@@ -298,13 +298,14 @@ const ownerEmail = (process.env.STUDIO_OWNER_EMAIL || 'kelvensarbah@gmail.com').
         title: project.title,
         companyName: project.companyName,
         columns: project.columns,
-        tasks: project.tasks.map(({ id, title, description, status, dueDate, priority }) => ({
+        tasks: project.tasks.map(({ id, title, description, status, dueDate, priority, estimatedEffortDays }) => ({
           id,
           title,
           description: summarizeTaskDescription(description),
           status,
           dueDate,
           priority: ['Severe', 'High', 'Medium', 'Low'].includes(priority) ? priority : inferTaskPriority(title),
+          estimatedEffortDays: Math.max(0.5, estimatedEffortDays || 1),
           comments: project.comments.filter((comment) => comment.taskId === id),
         })),
         comments: project.comments.filter((comment) => !comment.taskId),
