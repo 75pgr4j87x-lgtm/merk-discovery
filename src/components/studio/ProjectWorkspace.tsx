@@ -389,18 +389,18 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
             </div>
           </div>
           <div className="mb-2 flex flex-wrap items-end justify-between gap-2"><div><h3 className="text-base font-semibold">{project.title}</h3><p className="text-xs text-[#6F786F]">Project fee includes a 25% markup; miscellaneous fee is billed separately.</p></div>
-            <div className="text-right text-xs text-[#69736A]">Total project fee<div className="mt-1 text-base font-semibold text-[#3F4A32]">{money(project.projectCharge, project.currency)}</div></div>
+            <div className="text-right text-xs text-[#69736A]">Total project fee<div className="mt-1 text-base font-semibold text-[#3F4A32]">{money(project.projectCharge ?? 0, project.currency)}</div></div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-left text-xs">
               <thead><tr className="border-y border-[#D9DED7] text-[10px] uppercase tracking-wider text-[#6F786F]"><th className="py-3 pr-3">Description</th><th className="py-3 pr-3">Due date</th><th className="py-3 text-right">Amount</th></tr></thead>
-              <tbody>{project.tasks.map((task) => <tr key={task.id} className="border-b border-[#E5E9E3]"><td className="py-3 pr-3"><div className="font-medium">{task.title}</div>{task.description && <div className="mt-1 whitespace-pre-wrap text-[11px] text-[#69736A]">{task.description}</div>}</td><td className="py-3 pr-3 text-[#69736A]">{task.dueDate || '—'}</td><td className="py-3 text-right tabular-nums">{money(task.amount, project.currency)}</td></tr>)}</tbody>
+              <tbody>{project.tasks.map((task) => <tr key={task.id} className="border-b border-[#E5E9E3]"><td className="py-3 pr-3"><div className="font-medium">{task.title}</div>{task.description && <div className="mt-1 whitespace-pre-wrap text-[11px] text-[#69736A]">{task.description}</div>}</td><td className="py-3 pr-3 text-[#69736A]">{task.dueDate || '—'}</td><td className="py-3 text-right tabular-nums">{money(task.amount ?? 0, project.currency)}</td></tr>)}</tbody>
             </table>
           </div>
           <div className="ml-auto mt-5 max-w-xs space-y-2 text-xs">
             <div className="workspace-no-print flex items-center justify-between gap-3"><label htmlFor="invoice-discount" className="text-[#69736A]">Discount (%)</label><input id="invoice-discount" type="number" min="0" max="100" step="0.5" value={project.discountPercent} onChange={(event) => changeProject((current) => ({ ...current, discountPercent: Math.min(100, Math.max(0, Number(event.target.value) || 0)) }))} className="w-24 border border-[#E5EADF] px-2 py-1.5 text-right text-[#3F4A32]" /></div>
-            {project.discountPercent > 0 && <div className="flex justify-between"><span className="text-[#69736A]">Project fee</span><span>{money(subtotal, project.currency)}</span></div>}
-            {project.discountPercent > 0 && <div className="flex justify-between"><span className="text-[#69736A]">Discount ({project.discountPercent}%)</span><span>-{money(discount, project.currency)}</span></div>}
+            {(project.discountPercent ?? 0) > 0 && <div className="flex justify-between"><span className="text-[#69736A]">Project fee</span><span>{money(subtotal, project.currency)}</span></div>}
+            {(project.discountPercent ?? 0) > 0 && <div className="flex justify-between"><span className="text-[#69736A]">Discount ({project.discountPercent}%)</span><span>-{money(discount, project.currency)}</span></div>}
             <div className="flex justify-between"><span className="text-[#69736A]">Project subtotal</span><span>{money(discountedSubtotal, project.currency)}</span></div>
             <div className="flex justify-between"><span className="text-[#69736A]">Miscellaneous (10%)</span><span>{money(miscellaneous, project.currency)}</span></div>
             <div className="flex justify-between border-t-2 pt-3 text-sm font-semibold" style={{ borderColor: primaryColor }}><span>Total due</span><span>{money(discountedSubtotal + miscellaneous, project.currency)}</span></div>
@@ -444,7 +444,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
               {canEdit && <form onSubmit={sendTaskComment} className="space-y-3">
                 <label className="block text-xs text-[#3F4A32]">Add a comment<textarea autoFocus required maxLength={1000} rows={3} value={commentDraft} onChange={(event) => setCommentDraft(event.target.value)} className="mt-1 w-full rounded-xl border border-[#E5EADF] px-3 py-2 text-sm" placeholder="Write a task update or question" /></label>
                 <div className="flex justify-end"><button disabled={commentSending || !commentDraft.trim()} className="inline-flex items-center gap-2 rounded-xl bg-[#3F4A32] px-4 py-2.5 text-sm text-[#FAF6F1] disabled:opacity-50"><MessageCircle size={15} className="text-[#D9A441]" />{commentSending ? 'Sending...' : 'Add comment'}</button></div>
-              </form>
+              </form>}
             </section>
           </div>;
         })()}
