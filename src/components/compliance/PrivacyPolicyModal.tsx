@@ -58,7 +58,7 @@ export const PrivacyPolicyModal: React.FC<PrivacyPolicyModalProps> = ({ isOpen, 
               1. Data Controller
             </h3>
             <p>
-              The data controller responsible for your personal data is <strong>Merakifos Creative Studio</strong> (Founder & Executive Principal: Keven Sarbah). Inquiries regarding privacy compliance can be directed to <a href="mailto:kelvensarbah@gmail.com" className="text-[#3F4A32] underline hover:text-[#7C8B5F]">kelvensarbah@gmail.com</a>.
+              The data controller responsible for your personal data is <strong>Merakifos Creative Studio</strong>. For privacy inquiries, use the contact details provided in your service agreement.
             </p>
           </section>
 

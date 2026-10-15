@@ -35,9 +35,14 @@ import {
   Key,
   EyeOff,
   Shield,
+  KanbanSquare,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 import { exportBriefAsPdf } from '../../utils/pdfGenerator';
 import { cleanBriefDocument } from '../../services/briefGenerator';
+import { ProjectWorkspace } from './ProjectWorkspace';
+import { soundTrack } from '../../utils/soundtrack';
 
 interface StoredSubmission {
   id: string;
@@ -89,7 +94,17 @@ interface OutboxEntry {
   error?: string;
 }
 
-const DEFAULT_OWNER_EMAIL = 'kelvensarbah@gmail.com';
+interface StudioInvite {
+  email: string;
+  role: 'admin' | 'project_manager' | 'viewer';
+  createdAt: string;
+}
+
+const roleLabel: Record<StudioInvite['role'], string> = {
+  admin: 'Admin',
+  project_manager: 'Project Manager',
+  viewer: 'Viewer',
+};
 
 async function downloadStudioFile(path: string, filename: string) {
   const response = await studioFetch(path);
@@ -104,13 +119,17 @@ async function downloadStudioFile(path: string, filename: string) {
 }
 
 export const StudioPortalApp: React.FC = () => {
-  // Authentication & Gate State: Restricted strictly to Keven Sarbah
+  // Firebase confirms identity; the server assigns Super Admin or invite role.
   const [user, setUser] = React.useState<User | null>(null);
   const [isAuthenticated, setIsAuthenticated] = React.useState(false);
+  const [isStudioOwner, setIsStudioOwner] = React.useState(false);
+  const [accessRole, setAccessRole] = React.useState<'super_admin' | StudioInvite['role'] | null>(null);
+  const [authError, setAuthError] = React.useState('');
 
   // Data State
   const [submissions, setSubmissions] = React.useState<StoredSubmission[]>([]);
   const [outbox, setOutbox] = React.useState<OutboxEntry[]>([]);
+  const [studioInvites, setStudioInvites] = React.useState<StudioInvite[]>([]);
   const [isLoading, setIsLoading] = React.useState(false);
   const [searchTerm, setSearchTerm] = React.useState('');
   const [statusFilter, setStatusFilter] = React.useState<'all' | 'approved' | 'pending'>('all');
@@ -120,6 +139,20 @@ export const StudioPortalApp: React.FC = () => {
   const [viewingAnswersSub, setViewingAnswersSub] = React.useState<StoredSubmission | null>(null);
   const [isOutboxOpen, setIsOutboxOpen] = React.useState(false);
   const [previewEmail, setPreviewEmail] = React.useState<OutboxEntry | null>(null);
+  const [projectWorkspaceId, setProjectWorkspaceId] = React.useState<string | null>(null);
+  const [isInviteManagerOpen, setIsInviteManagerOpen] = React.useState(false);
+  const [inviteEmail, setInviteEmail] = React.useState('');
+  const [inviteRole, setInviteRole] = React.useState<StudioInvite['role']>('project_manager');
+  const [inviteError, setInviteError] = React.useState('');
+  const [savingInvite, setSavingInvite] = React.useState(false);
+  const [effectsMuted, setEffectsMuted] = React.useState(soundTrack.getAreUiEffectsMuted());
+
+  const handleButtonSound = (event: React.MouseEvent<HTMLDivElement>) => {
+    const target = event.target;
+    if (!(target instanceof Element) || target.closest('[data-sound-control]')) return;
+    const button = target.closest('button');
+    if (button && !button.disabled) soundTrack.playSoftDrop(0.9);
+  };
 
   // Action status
   const [sendingEmailId, setSendingEmailId] = React.useState<string | null>(null);
@@ -127,28 +160,43 @@ export const StudioPortalApp: React.FC = () => {
   const [copyToast, setCopyToast] = React.useState(false);
   const [syncingDocId, setSyncingDocId] = React.useState<string | null>(null);
 
-  // Initialize Auth - Strictly verifies founder email identity
+  // Firebase confirms identity; the server decides owner/invite access.
   React.useEffect(() => {
     const unsubscribe = initAuth(
       (currentUser) => {
-        if (currentUser) {
-          if (currentUser.email?.toLowerCase() === DEFAULT_OWNER_EMAIL && currentUser.emailVerified) {
+        void (async () => {
+          try {
+            const response = await studioFetch('/api/studio/access');
+            const data = await response.json();
+            if (!response.ok || !data.allowed) {
+              setUser(null);
+              setIsAuthenticated(false);
+              setIsStudioOwner(false);
+              setAccessRole(null);
+              setAuthError(data.error || 'This verified Google account has not been invited to Studio.');
+              await auth.signOut();
+              return;
+            }
+            setAuthError('');
             setUser(currentUser);
+            setIsStudioOwner(Boolean(data.isOwner));
+            setAccessRole(data.role || null);
             setIsAuthenticated(true);
-          } else {
-            // Unauthorized login attempt blocked immediately
+          } catch (error) {
             setUser(null);
             setIsAuthenticated(false);
+            setIsStudioOwner(false);
+            setAccessRole(null);
+            setAuthError(error instanceof Error ? error.message : 'Could not verify Studio access.');
             auth.signOut().catch(() => {});
           }
-        } else {
-          setUser(null);
-          setIsAuthenticated(false);
-        }
+        })();
       },
       () => {
-        setUser(null);
-        setIsAuthenticated(false);
+          setUser(null);
+          setIsAuthenticated(false);
+          setIsStudioOwner(false);
+          setAccessRole(null);
       }
     );
     return () => {
@@ -172,6 +220,10 @@ export const StudioPortalApp: React.FC = () => {
         const outboxData = await outboxRes.json();
         setOutbox(outboxData);
       }
+      if (isStudioOwner) {
+        const invitesRes = await studioFetch('/api/studio/invites');
+        if (invitesRes.ok) setStudioInvites(await invitesRes.json());
+      }
     } catch (e) {
       console.error('Failed to load studio data:', e);
     } finally {
@@ -183,7 +235,42 @@ export const StudioPortalApp: React.FC = () => {
     if (isAuthenticated) {
       fetchData();
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, isStudioOwner]);
+
+  const handleInviteUser = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSavingInvite(true);
+    setInviteError('');
+    try {
+      const response = await studioFetch('/api/studio/invites', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: inviteEmail, role: inviteRole }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not invite this user.');
+      setInviteEmail('');
+      setInviteRole('project_manager');
+      const invitesRes = await studioFetch('/api/studio/invites');
+      if (invitesRes.ok) setStudioInvites(await invitesRes.json());
+    } catch (error) {
+      setInviteError(error instanceof Error ? error.message : 'Could not invite this user.');
+    } finally {
+      setSavingInvite(false);
+    }
+  };
+
+  const handleRevokeInvite = async (email: string) => {
+    setInviteError('');
+    try {
+      const response = await studioFetch(`/api/studio/invites/${encodeURIComponent(email)}`, { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not revoke this invitation.');
+      setStudioInvites((current) => current.filter((invite) => invite.email !== email));
+    } catch (error) {
+      setInviteError(error instanceof Error ? error.message : 'Could not revoke this invitation.');
+    }
+  };
 
   const handleSignOut = () => {
     setIsAuthenticated(false);
@@ -199,7 +286,7 @@ export const StudioPortalApp: React.FC = () => {
     }
   };
 
-  // Dispatch Brief Copy to Keven
+  // Dispatch a copy to the server-configured Studio recipient.
   const handleSendBriefCopy = async (sub: StoredSubmission, customRecipient?: string) => {
     setSendingEmailId(sub.id);
     setEmailSuccessMsg(null);
@@ -209,14 +296,14 @@ export const StudioPortalApp: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           submissionId: sub.id,
-          recipientEmail: customRecipient || DEFAULT_OWNER_EMAIL,
+          ...(customRecipient ? { recipientEmail: customRecipient } : {}),
           customNote: 'Dispatched from Merakifos Studio OS',
         }),
       });
 
       if (res.ok) {
         const data = await res.json();
-        setEmailSuccessMsg(`Brief copy sent to ${data.recipient || DEFAULT_OWNER_EMAIL}`);
+        setEmailSuccessMsg(customRecipient ? `Brief copy sent to ${data.recipient}` : 'Brief copy sent to the configured Studio recipient.');
         // Refresh outbox
         const outboxRes = await studioFetch('/api/outbox');
         if (outboxRes.ok) {
@@ -310,18 +397,20 @@ export const StudioPortalApp: React.FC = () => {
           </div>
 
           <h1 className="text-2xl font-heading font-normal text-[#3F4A32] mb-2">
-            Founder Operating Portal
+            Studio Operating Portal
           </h1>
           <p className="text-xs text-[#7C8B5F] font-body font-light mb-8 max-w-xs mx-auto">
-            Restricted access for Keven Sarbah. Review client intakes, auto-sync Excel workbooks, and manage project briefs.
+            Sign in with an invited, verified Google account to review client projects and Studio work.
           </p>
+
+          {authError && <p role="alert" className="mb-5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">{authError}</p>}
 
           <div className="flex justify-center">
             <GoogleSignInButton user={user} onAuthChange={setUser} />
           </div>
 
           <div className="mt-8 pt-4 border-t border-stone-100 flex items-center justify-between text-[10px] text-[#7C8B5F]/70 font-body font-light">
-            <span>Notification Target: {DEFAULT_OWNER_EMAIL}</span>
+            <span>Private Studio workspace</span>
             <a
               href="/"
               className="text-[#3F4A32] hover:underline"
@@ -338,7 +427,7 @@ export const StudioPortalApp: React.FC = () => {
   // RENDER: Full Studio OS Application
   // -------------------------------------------------------------
   return (
-    <div className="min-h-screen bg-[#FAF6F1] text-[#3F4A32] font-sans flex flex-col selection:bg-[#7C8B5F]/20 selection:text-[#3F4A32]">
+    <div onClickCapture={handleButtonSound} className="min-h-screen bg-[#FAF6F1] text-[#3F4A32] font-sans flex flex-col selection:bg-[#7C8B5F]/20 selection:text-[#3F4A32]">
       {/* Studio Top Navigation Bar */}
       <header className="sticky top-0 z-30 bg-[#FAF6F1]/90 backdrop-blur-md border-b border-[#E5EADF] px-4 sm:px-8 py-3.5 transition">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
@@ -353,11 +442,17 @@ export const StudioPortalApp: React.FC = () => {
               </span>
             </div>
             <span className="hidden sm:inline-block px-2.5 py-0.5 rounded-full text-[10px] bg-white border border-[#E5EADF] text-[#7C8B5F] font-body font-light">
-              Founder: Keven Sarbah
+              {isStudioOwner ? 'Super Admin' : roleLabel[accessRole === 'super_admin' ? 'admin' : (accessRole || 'viewer')]}
             </span>
           </div>
 
           <div className="flex items-center gap-2.5">
+            {isStudioOwner && <button onClick={() => setIsInviteManagerOpen(true)} className="inline-flex items-center gap-2 rounded-full border border-[#E5EADF] bg-white px-3 py-1.5 text-xs text-[#3F4A32] hover:border-[#7C8B5F]">
+              <Key className="h-3.5 w-3.5 text-[#7C8B5F]" /><span className="hidden sm:inline">Studio access</span>
+            </button>}
+            <button data-sound-control onClick={() => setEffectsMuted(soundTrack.toggleUiEffectsMuted())} aria-pressed={!effectsMuted} aria-label={effectsMuted ? 'Turn interface sounds on' : 'Turn interface sounds off'} title={effectsMuted ? 'Turn interface sounds on' : 'Turn interface sounds off'} className="p-2 text-[#7C8B5F] hover:bg-white hover:text-[#3F4A32]">
+              {effectsMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+            </button>
             {/* Outbox Badge */}
             <button
               onClick={() => setIsOutboxOpen(true)}
@@ -424,8 +519,7 @@ export const StudioPortalApp: React.FC = () => {
                 Responses & Briefs Hub
               </h1>
               <p className="text-xs text-[#7C8B5F] font-body font-light mt-1">
-                All client responses are automatically appended to your master Excel sheet and copies sent to{' '}
-                <span className="text-[#3F4A32] font-normal underline">{DEFAULT_OWNER_EMAIL}</span>.
+                All client responses are saved to the private Studio workspace.
               </p>
             </div>
 
@@ -511,8 +605,8 @@ export const StudioPortalApp: React.FC = () => {
                 <span>{outbox.length}</span>
                 <Mail className="w-4 h-4 text-[#7C8B5F]" />
               </div>
-              <div className="text-[10px] text-[#7C8B5F] mt-1 font-body font-light truncate" title={DEFAULT_OWNER_EMAIL}>
-                Delivered to {DEFAULT_OWNER_EMAIL}
+              <div className="text-[10px] text-[#7C8B5F] mt-1 font-body font-light truncate">
+                Studio email activity
               </div>
             </div>
           </div>
@@ -671,6 +765,14 @@ export const StudioPortalApp: React.FC = () => {
 
                     {/* Right action buttons */}
                     <div className="flex flex-wrap items-center gap-2 self-start lg:self-center">
+                      <button
+                        onClick={() => setProjectWorkspaceId(sub.id)}
+                        className="px-3 py-2 bg-[#3F4A32] hover:bg-[#343D29] text-[#FAF6F1] rounded-xl text-xs font-body font-normal transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+                        title="Open the project workflow and invoice"
+                      >
+                        <KanbanSquare className="w-3.5 h-3.5 text-[#D9A441]" />
+                        <span>Project</span>
+                      </button>
                       {/* View Brief Button */}
                       <button
                         onClick={() => setViewingBriefSub(sub)}
@@ -684,9 +786,10 @@ export const StudioPortalApp: React.FC = () => {
                       {/* Send Copy to Me Button */}
                       <button
                         onClick={() => handleSendBriefCopy(sub)}
+                        hidden={accessRole !== 'admin' && accessRole !== 'super_admin'}
                         disabled={sendingEmailId === sub.id}
                         className="px-3 py-2 bg-[#3F4A32] hover:bg-[#343D29] text-[#FAF6F1] rounded-xl text-xs font-body font-normal transition flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
-                        title={`Send copy of this brief to ${DEFAULT_OWNER_EMAIL}`}
+                        title="Send a copy to the configured Studio recipient"
                       >
                         <Mail className="w-3.5 h-3.5 text-[#D9A441]" />
                         <span>{sendingEmailId === sub.id ? 'Sending...' : 'Email Copy to Me'}</span>
@@ -794,6 +897,7 @@ export const StudioPortalApp: React.FC = () => {
 
                 <button
                   onClick={() => handleSendBriefCopy(viewingBriefSub)}
+                  hidden={accessRole !== 'admin' && accessRole !== 'super_admin'}
                   disabled={sendingEmailId === viewingBriefSub.id}
                   className="px-3.5 py-1.5 bg-[#3F4A32] hover:bg-[#343D29] text-[#FAF6F1] text-xs font-body font-normal rounded-full flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
                 >
@@ -933,11 +1037,8 @@ export const StudioPortalApp: React.FC = () => {
                   Email Audit Log
                 </span>
                 <h2 className="text-xl font-heading font-normal text-[#3F4A32] mt-0.5">
-                  Briefs Dispatched to Founder ({outbox.length})
+                  Studio Email Activity ({outbox.length})
                 </h2>
-                <div className="text-xs text-[#7C8B5F] font-body font-light">
-                  Recipient target: <strong className="text-[#3F4A32] font-normal">{DEFAULT_OWNER_EMAIL}</strong>
-                </div>
               </div>
             </div>
 
@@ -1025,7 +1126,7 @@ export const StudioPortalApp: React.FC = () => {
             )}
 
             <div className="pt-2 flex justify-between items-center text-xs text-[#7C8B5F] font-body font-light">
-              <span>Emails are recorded and delivered to Keven Sarbah's inbox.</span>
+              <span>Email delivery uses the private Studio recipient configuration.</span>
               <button
                 onClick={() => setIsOutboxOpen(false)}
                 className="px-4 py-1.5 bg-[#3F4A32] text-[#FAF6F1] rounded-xl text-xs cursor-pointer font-normal"
@@ -1045,9 +1146,45 @@ export const StudioPortalApp: React.FC = () => {
           <span>STUDIO OPERATING SYSTEM</span>
         </div>
         <div>
-          <span>Private Founder View • Keven Sarbah ({DEFAULT_OWNER_EMAIL})</span>
+          <span>{isStudioOwner ? 'Super Admin' : 'Invited Studio User'}</span>
         </div>
       </footer>
+      {projectWorkspaceId && (
+        <ProjectWorkspace
+          submissionId={projectWorkspaceId}
+          onClose={() => setProjectWorkspaceId(null)}
+          canEdit={accessRole !== 'viewer'}
+          canManageInvoice={isStudioOwner || accessRole === 'admin'}
+        />
+      )}
+      {isInviteManagerOpen && isStudioOwner && (
+        <div className="fixed inset-0 z-[70] grid place-items-center bg-black/40 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setIsInviteManagerOpen(false); }}>
+          <section role="dialog" aria-modal="true" aria-labelledby="studio-access-title" className="w-full max-w-xl rounded-2xl border border-[#E5EADF] bg-white p-5 shadow-xl">
+            <div className="mb-4 flex items-start justify-between gap-3 border-b border-[#E5EADF] pb-3">
+              <div><p className="text-xs uppercase tracking-wider text-[#7C8B5F]">Owner settings</p><h2 id="studio-access-title" className="mt-1 text-lg font-semibold">Studio access</h2></div>
+              <button onClick={() => setIsInviteManagerOpen(false)} aria-label="Close Studio access" className="p-2 text-[#7C8B5F]"><X size={17} /></button>
+            </div>
+            <p className="mb-4 text-sm text-[#59645B]">Invitees sign in with Google using the exact email below. They must have a verified Google email. Revoking access takes effect on their next API request.</p>
+            <form onSubmit={handleInviteUser} className="mb-5 flex flex-col gap-2 sm:flex-row">
+              <input type="email" required value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="colleague@example.com" className="min-w-0 flex-1 rounded-xl border border-[#E5EADF] px-3 py-2.5 text-sm" aria-label="Email address to invite" />
+              <select value={inviteRole} onChange={(event) => setInviteRole(event.target.value as StudioInvite['role'])} aria-label="Role for invited user" className="rounded-xl border border-[#E5EADF] bg-white px-3 py-2.5 text-sm">
+                <option value="admin">Admin</option>
+                <option value="project_manager">Project Manager</option>
+                <option value="viewer">Viewer</option>
+              </select>
+              <button disabled={savingInvite} className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#3F4A32] px-4 py-2.5 text-sm text-[#FAF6F1] disabled:opacity-50"><Key size={15} className="text-[#D9A441]" />{savingInvite ? 'Inviting...' : 'Invite user'}</button>
+            </form>
+            {inviteError && <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{inviteError}</p>}
+            <h3 className="mb-2 text-sm font-semibold">Invited users ({studioInvites.length})</h3>
+            {studioInvites.length ? <ul className="max-h-64 divide-y divide-[#E5EADF] overflow-y-auto rounded-xl border border-[#E5EADF] px-3">
+              {studioInvites.map((invite) => <li key={invite.email} className="flex flex-wrap items-center justify-between gap-2 py-3">
+                <div className="min-w-0"><div className="break-all text-sm text-[#3F4A32]">{invite.email}</div><div className="text-xs text-[#7C8B5F]">{roleLabel[invite.role]} · Invited {new Date(invite.createdAt).toLocaleDateString()}</div></div>
+                <button onClick={() => handleRevokeInvite(invite.email)} className="rounded-xl border border-[#E5EADF] px-3 py-1.5 text-xs text-[#7A3D35] hover:bg-red-50">Revoke</button>
+              </li>)}
+            </ul> : <p className="rounded-xl border border-dashed border-[#CDD4CC] px-4 py-7 text-center text-sm text-[#7C8B5F]">No invited users yet.</p>}
+          </section>
+        </div>
+      )}
     </div>
   );
 };

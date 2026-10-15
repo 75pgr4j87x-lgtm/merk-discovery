@@ -21,9 +21,13 @@ View your app in AI Studio: https://ai.studio/apps/8cd8f286-8d8e-4a39-85b6-e12a3
 
 ## Admin Access
 
-The public intake is served at `/`. The studio portal is at `/studio` and requires Google sign-in with the verified owner account. Studio data APIs verify Firebase ID tokens on the server; the browser-side route is not the security boundary.
+The public intake is served at `/`. The studio portal is at `/studio` and requires Google sign-in with a verified owner or explicitly invited email. The owner manages invitees from the Studio access control. Studio data APIs verify Firebase ID tokens and invitation status on the server; the browser-side route is not the security boundary. An invite grants Studio API access but does not itself send project share links to the invitee.
 
-For local or hosted API access, configure `FIREBASE_SERVICE_ACCOUNT` with the Firebase service-account JSON as a private environment secret, or provide Application Default Credentials. Set `STUDIO_OWNER_EMAIL` to the authorized owner email. Never put service-account credentials in frontend variables or commit them to the repository.
+For local or hosted API access, configure `FIREBASE_SERVICE_ACCOUNT` with the Firebase service-account JSON as a private environment secret, or provide Application Default Credentials. Set `STUDIO_OWNER_EMAIL` as a private server-only environment variable to bootstrap the Super Admin. Do not put it in `VITE_*` variables, source code, `.env.example`, or any client response. The Super Admin signs in through Google and manages invited users and roles in Studio. Never put service-account credentials in frontend variables or commit them to the repository.
+
+For local Studio sign-in, add `localhost` (domain only, no protocol or port) to Firebase Authentication's authorized domains. Open the Firebase Console for project `gen-lang-client-0961556565` at [Authentication settings](https://console.firebase.google.com/project/gen-lang-client-0961556565/authentication/settings), then use Authentication > Settings > Authorized domains > Add domain. After it appears in the list, reload `http://localhost:3000/studio` and retry Google sign-in. The Firebase project owner or an editor with Authentication configuration access must make this change.
+
+Project share tokens are generated randomly, stored as hashes, and issued in URL fragments so browsers do not send them as request paths or referrers. The shared project-board response omits client email, brief content, invoice, currency, discounts, and task amounts. A separate invoice-download endpoint intentionally makes the Studio-saved invoice available to anyone who has that project's share token; treat the link as confidential and revoke it by generating a replacement. Client deletion requests also remove matching Studio project documents. The invoice generator does not calculate taxes; confirm applicable tax, recordkeeping, invoice disclosure, and consumer/privacy obligations for the relevant jurisdictions before issuing invoices or sharing client links. These safeguards are engineering controls, not a legal-compliance certification.
 
 ## Deploy on Vercel
 

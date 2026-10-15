@@ -1607,7 +1607,7 @@ export const MerakifosDiscovery: React.FC<MerakifosDiscoveryProps> = ({
                       {isApproved ? (
                         <span className="text-[#3F4A32] flex items-center gap-1.5">
                           <CheckCircle2 className="w-4 h-4 text-[#7C8B5F]" />
-                          <span>Your approved summary has been saved and a copy delivered directly to Keven (kelvensarbah@gmail.com).</span>
+                          <span>Your approved summary has been saved and a copy delivered to the Merakifos Studio team.</span>
                         </span>
                       ) : isEditingBrief ? (
                         'You are currently editing your brief. Click "Save Changes" when ready.'

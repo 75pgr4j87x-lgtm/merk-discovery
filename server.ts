@@ -1,6 +1,7 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   StoredSubmission,
   buildSubmissionsExcelWorkbook,
@@ -10,12 +11,22 @@ import {
 } from './serverEmailAndExcel.js';
 import {
   deleteSubmission,
+  deleteStudioInvite,
   getStudioAuth,
+  loadStudioInvite,
+  findProjectByShareTokenHash,
+  loadStudioInvites,
   loadOutbox,
+  loadStudioProject,
   loadSubmissions,
   purgeClientDataByEmail,
   saveOutboxEntry,
+  saveStudioInvite,
+  saveStudioProject,
   saveSubmission,
+  type ProjectComment,
+  type ProjectTask,
+  type StudioProject,
 } from './serverStore.js';
 import {
   sanitizeSubmissionPayload,
@@ -26,7 +37,7 @@ import {
 dotenv.config();
 
 const app = express();
-const ownerEmail = (process.env.STUDIO_OWNER_EMAIL || 'kelvensarbah@gmail.com').toLowerCase();
+const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
 
   // OWASP Top 10 Security Headers
   app.use((_req, res, next) => {
@@ -39,25 +50,471 @@ const ownerEmail = (process.env.STUDIO_OWNER_EMAIL || 'kelvensarbah@gmail.com').
 
   app.use(express.json({ limit: '5mb' }));
 
-  const requireStudioOwner: express.RequestHandler = async (req, res, next) => {
+  const verifyStudioIdentity = async (req: express.Request, res: express.Response) => {
+    if (!ownerEmail) {
+      res.status(503).json({ error: 'Studio Super Admin is not configured on the server.' });
+      return null;
+    }
     const authorization = req.get('authorization') || '';
     const token = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
     if (!token) {
       res.status(401).json({ error: 'Studio sign-in required.' });
-      return;
+      return null;
     }
-
     try {
       const decodedToken = await getStudioAuth().verifyIdToken(token);
-      if (decodedToken.email?.toLowerCase() !== ownerEmail || !decodedToken.email_verified) {
-        res.status(403).json({ error: 'Studio access is restricted to the owner account.' });
-        return;
+      const email = (decodedToken.email || '').trim().toLowerCase();
+      if (!email || !decodedToken.email_verified) {
+        res.status(403).json({ error: 'A verified Google email is required for Studio access.' });
+        return null;
       }
-      next();
+      const isOwner = Boolean(ownerEmail && email === ownerEmail);
+      const invite = isOwner ? null : await loadStudioInvite(email);
+      return { isOwner, role: isOwner ? 'super_admin' as const : invite?.role || null };
     } catch {
       res.status(401).json({ error: 'Invalid or expired studio sign-in.' });
+      return null;
     }
   };
+
+  const requireStudioAccess: express.RequestHandler = async (req, res, next) => {
+    const identity = await verifyStudioIdentity(req, res);
+    if (!identity) return;
+    if (identity.isOwner || identity.role) {
+      res.locals.studioRole = identity.role;
+      next();
+      return;
+    }
+    res.status(403).json({ error: 'This verified Google account has not been invited to Studio.' });
+  };
+
+  const requireStudioProjectEditor: express.RequestHandler = async (req, res, next) => {
+    const identity = await verifyStudioIdentity(req, res);
+    if (!identity) return;
+    if (identity.isOwner || identity.role === 'admin' || identity.role === 'project_manager') {
+      res.locals.studioRole = identity.role;
+      next();
+      return;
+    }
+    res.status(403).json({ error: 'Your Studio role does not allow project edits.' });
+  };
+
+  const requireStudioAdmin: express.RequestHandler = async (req, res, next) => {
+    const identity = await verifyStudioIdentity(req, res);
+    if (!identity) return;
+    if (identity.isOwner || identity.role === 'admin') {
+      res.locals.studioRole = identity.role;
+      next();
+      return;
+    }
+    res.status(403).json({ error: 'Your Studio role does not allow this action.' });
+  };
+
+  const requireStudioOwnerAccess: express.RequestHandler = async (req, res, next) => {
+    const identity = await verifyStudioIdentity(req, res);
+    if (!identity) return;
+    if (identity.isOwner) {
+      next();
+      return;
+    }
+    res.status(403).json({ error: 'Only the Studio owner can manage invitations.' });
+  };
+
+  app.get('/api/studio/access', async (req, res) => {
+    const identity = await verifyStudioIdentity(req, res);
+    if (!identity) return;
+    return res.json({ allowed: identity.isOwner || Boolean(identity.role), isOwner: identity.isOwner, role: identity.role });
+  });
+
+  app.get('/api/studio/invites', requireStudioOwnerAccess, async (_req, res) => {
+    try {
+      return res.json(await loadStudioInvites());
+    } catch (error) {
+      console.error('Failed to load Studio invites:', error);
+      return res.status(500).json({ error: 'Could not load invitations.' });
+    }
+  });
+
+  app.post('/api/studio/invites', requireStudioOwnerAccess, async (req, res) => {
+    try {
+      const { isValid, email } = sanitizeEmail(req.body?.email);
+      if (!isValid) return res.status(400).json({ error: 'Enter a valid email address.' });
+      if (ownerEmail && email.toLowerCase() === ownerEmail) return res.status(400).json({ error: 'The Super Admin already has Studio access.' });
+      const role = req.body?.role;
+      if (!['admin', 'project_manager', 'viewer'].includes(role)) {
+        return res.status(400).json({ error: 'Choose Admin, Project Manager, or Viewer.' });
+      }
+      const authorization = req.get('authorization') || '';
+      const token = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
+      if (!token) return res.status(401).json({ error: 'Studio sign-in required.' });
+      const decodedToken = await getStudioAuth().verifyIdToken(token);
+      await saveStudioInvite({
+        email: email.toLowerCase(),
+        role,
+        invitedBy: (decodedToken.email || '').toLowerCase(),
+        createdAt: new Date().toISOString(),
+      });
+      return res.status(201).json({ success: true, email: email.toLowerCase() });
+    } catch (error) {
+      console.error('Failed to invite Studio user:', error);
+      return res.status(500).json({ error: 'Could not invite this user.' });
+    }
+  });
+
+  app.delete('/api/studio/invites/:email', requireStudioOwnerAccess, async (req, res) => {
+    try {
+      const { isValid, email } = sanitizeEmail(req.params.email);
+      if (!isValid) return res.status(400).json({ error: 'Invalid email address.' });
+      await deleteStudioInvite(email);
+      return res.json({ success: true, email });
+    } catch (error) {
+      console.error('Failed to revoke Studio invite:', error);
+      return res.status(500).json({ error: 'Could not revoke this invitation.' });
+    }
+  });
+
+  const hashShareToken = (token: string) => createHash('sha256').update(token).digest('hex');
+  const ownerProjectResponse = (project: StudioProject, role?: string) => {
+    const { shareTokenHash: _shareTokenHash, ...visibleProject } = project;
+    if (role === 'viewer' || role === 'project_manager') {
+      const { invoiceNumber: _invoiceNumber, invoiceDueDate: _invoiceDueDate, currency: _currency, projectCharge: _projectCharge, discountPercent: _discountPercent, invoiceNotes: _invoiceNotes, ...nonFinancialProject } = visibleProject;
+      return {
+        ...nonFinancialProject,
+        tasks: project.tasks.map(({ amount: _amount, ...task }) => task),
+      };
+    }
+    return visibleProject;
+  };
+
+  const createProjectFromSubmission = (submission: StoredSubmission): StudioProject => {
+    const features = [...new Set([
+      ...(submission.coreObjectives || []),
+      ...(submission.selectedFeatures || []),
+    ])].filter(Boolean).slice(0, 12);
+    const isEcommerce = /e-?commerce|shop|store|product/i.test(
+      `${submission.primaryGoal || ''} ${features.join(' ')} ${submission.brief}`
+    );
+    const deliverables = isEcommerce
+      ? ['Discovery and content structure', 'Visual direction and interface design', 'Storefront and product setup', 'Checkout and payment integration', 'Mobile, accessibility, and performance QA', 'Client review and launch']
+      : ['Discovery and content structure', 'Visual direction and page designs', 'Website build and responsive layouts', 'Content and integrations', 'Mobile, accessibility, and performance QA', 'Client review and launch'];
+    const featureTasks = features.map((feature) => `Implement: ${feature}`);
+    const taskTitles = [...deliverables.slice(0, 3), ...featureTasks, ...deliverables.slice(3)];
+    return {
+      submissionId: submission.id,
+      title: `${submission.companyName || 'Client'} project`,
+      clientName: submission.clientName || '',
+      companyName: submission.companyName || '',
+      clientEmail: submission.clientEmail || '',
+      brandColors: submission.selectedColors || [],
+      shareTokenHash: '',
+      columns: ['Backlog', 'In progress', 'Review', 'Done'],
+      tasks: taskTitles.map((title, index) => ({
+        id: randomUUID(),
+        title,
+        description: index === 0 ? summarizeTaskDescription(submission.successOutcome || submission.primaryGoal || 'Deliver the approved brief.') : '',
+        status: 'Backlog',
+        dueDate: '',
+        priority: inferTaskPriority(title),
+        estimatedEffortDays: estimateEffortDays(title),
+        amount: 0,
+      })),
+      comments: [],
+      invoiceNumber: `MF-${new Date().getFullYear()}-${submission.id.slice(-6).toUpperCase()}`,
+      invoiceDueDate: '',
+      currency: 'USD',
+      projectCharge: 0,
+      discountPercent: 0,
+      projectStartDate: '',
+      projectEndDate: '',
+      invoiceNotes: '',
+      updatedAt: new Date().toISOString(),
+    };
+  };
+
+  function estimateEffortDays(title: string): number {
+    const work = title.toLowerCase();
+    if (/checkout|payment|integration|automation|subscription|database/.test(work)) return 5;
+    if (/website build|responsive layout|storefront|product setup/.test(work)) return 8;
+    if (/implement:/.test(work)) return /e-?commerce|subscription|portal|automation|integration|database/.test(work) ? 7 : 4;
+    if (/visual direction|page design|design/.test(work)) return 5;
+    if (/content structure|copy|content/.test(work)) return 3;
+    if (/accessibility|performance|qa|quality/.test(work)) return 3;
+    if (/discovery|research|strategy/.test(work)) return 3;
+    if (/launch|handoff/.test(work)) return 2;
+    if (/client review/.test(work)) return 2;
+    return 3;
+  }
+
+  function inferTaskPriority(title: string): ProjectTask['priority'] {
+    const work = title.toLowerCase();
+    if (/security|privacy|compliance|payment|checkout|data migration|launch blocker/.test(work)) return 'Severe';
+    if (/integration|automation|subscription|e-commerce|storefront|database|accessibility/.test(work)) return 'High';
+    if (/launch|handoff|client review|quality|qa|performance/.test(work)) return 'Low';
+    if (/discovery|research|content structure|strategy/.test(work)) return 'Medium';
+    return 'Medium';
+  }
+
+  function summarizeTaskDescription(value: unknown): string {
+    if (typeof value !== 'string') return '';
+    const sentences = value.replace(/\s+/g, ' ').trim().split(/(?<=[.!?])\s+/).slice(0, 2);
+    return sentences.join(' ').split(' ').filter(Boolean).slice(0, 20).join(' ');
+  }
+
+  function allocateProjectFee(tasks: ProjectTask[], total: number): ProjectTask[] {
+    const totalEffort = tasks.reduce((sum, task) => sum + Math.max(0.5, task.estimatedEffortDays || 1), 0);
+    let remainingCents = Math.round(total * 100);
+    return tasks.map((task, index) => {
+      const amount = index === tasks.length - 1
+        ? remainingCents / 100
+        : Math.floor((total * Math.max(0.5, task.estimatedEffortDays || 1) / totalEffort) * 100) / 100;
+      remainingCents -= Math.round(amount * 100);
+      return { ...task, amount };
+    });
+  }
+
+  function scheduleTaskDueDates(tasks: ProjectTask[], startDate: string, endDate: string): ProjectTask[] {
+    const start = new Date(`${startDate}T00:00:00.000Z`);
+    const end = new Date(`${endDate}T00:00:00.000Z`);
+    if (!startDate || !endDate || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+      return tasks.map((task) => ({ ...task, dueDate: '' }));
+    }
+    const workdays: string[] = [];
+    const cursor = new Date(start);
+    while (cursor <= end) {
+      const day = cursor.getUTCDay();
+      if (day !== 0 && day !== 6) workdays.push(cursor.toISOString().slice(0, 10));
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    if (!workdays.length) workdays.push(startDate);
+    const totalEffort = tasks.reduce((sum, task) => sum + Math.max(0.5, task.estimatedEffortDays || 1), 0);
+    let completedEffort = 0;
+    return tasks.map((task) => {
+      completedEffort += Math.max(0.5, task.estimatedEffortDays || 1);
+      const offset = Math.min(workdays.length - 1, Math.max(0, Math.ceil((completedEffort / totalEffort) * workdays.length) - 1));
+      return { ...task, dueDate: workdays[offset] };
+    });
+  }
+
+  app.get('/api/projects/:id', requireStudioAccess, async (req, res) => {
+    try {
+      const submission = (await loadSubmissions()).find((item) => item.id === req.params.id);
+      if (!submission) return res.status(404).json({ error: 'Brief not found.' });
+      let project = await loadStudioProject(submission.id);
+      if (!project) {
+        project = createProjectFromSubmission(submission);
+        await saveStudioProject(project);
+      } else {
+        project = {
+          ...project,
+          discountPercent: Number.isFinite(project.discountPercent) ? project.discountPercent : 0,
+          projectStartDate: project.projectStartDate || '',
+          projectEndDate: project.projectEndDate || '',
+          tasks: project.tasks.map((task) => ({
+            ...task,
+            description: summarizeTaskDescription(task.description),
+            priority: ['Severe', 'High', 'Medium', 'Low'].includes(task.priority) ? task.priority : inferTaskPriority(task.title),
+            estimatedEffortDays: Number.isFinite(task.estimatedEffortDays) ? task.estimatedEffortDays : estimateEffortDays(task.title),
+          })),
+        };
+          project.tasks = scheduleTaskDueDates(
+            allocateProjectFee(project.tasks, project.projectCharge || 0),
+            project.projectStartDate,
+            project.projectEndDate,
+          );
+          await saveStudioProject(project);
+      }
+      return res.json(ownerProjectResponse(project, res.locals.studioRole));
+    } catch (error) {
+      console.error('Failed to load Studio project:', error);
+      return res.status(500).json({ error: 'Failed to load project.' });
+    }
+  });
+
+  app.put('/api/projects/:id', requireStudioProjectEditor, async (req, res) => {
+    try {
+      const current = await loadStudioProject(req.params.id);
+      if (!current) return res.status(404).json({ error: 'Project not found.' });
+      const { title, columns, tasks, invoiceNumber, invoiceDueDate, currency, projectCharge, discountPercent, projectStartDate, projectEndDate, invoiceNotes } = req.body || {};
+      if (typeof title !== 'string' || !Array.isArray(columns) || !Array.isArray(tasks) || tasks.length > 200) {
+        return res.status(400).json({ error: 'Invalid project data.' });
+      }
+      const cleanColumns = columns.map((column: unknown) => String(column).trim().slice(0, 40)).filter(Boolean).slice(0, 10);
+      if (!cleanColumns.length) return res.status(400).json({ error: 'Add at least one workflow column.' });
+      const cleanTasks: ProjectTask[] = tasks.map((task: any) => ({
+        id: typeof task.id === 'string' ? task.id.slice(0, 80) : randomUUID(),
+        title: String(task.title || '').trim().slice(0, 160),
+        description: summarizeTaskDescription(task.description),
+        status: cleanColumns.includes(task.status) ? task.status : cleanColumns[0],
+        dueDate: '',
+        priority: ['Severe', 'High', 'Medium', 'Low'].includes(task.priority) ? task.priority : inferTaskPriority(String(task.title || '')),
+        estimatedEffortDays: estimateEffortDays(String(task.title || '')),
+        amount: Number.isFinite(Number(task.amount)) ? Math.max(0, Number(task.amount)) : 0,
+      })).filter((task: ProjectTask) => task.title);
+      const cleanStartDate = typeof projectStartDate === 'string' ? projectStartDate.slice(0, 10) : '';
+      const cleanEndDate = typeof projectEndDate === 'string' ? projectEndDate.slice(0, 10) : '';
+      if (cleanStartDate && cleanEndDate && cleanStartDate > cleanEndDate) {
+        return res.status(400).json({ error: 'Project end date must be on or after the start date.' });
+      }
+        const isValidDate = (date: string) => !date || /^\d{4}-\d{2}-\d{2}$/.test(date)
+          && !Number.isNaN(Date.parse(`${date}T00:00:00.000Z`))
+          && new Date(`${date}T00:00:00.000Z`).toISOString().slice(0, 10) === date;
+        if (!isValidDate(cleanStartDate) || !isValidDate(cleanEndDate)) {
+          return res.status(400).json({ error: 'Enter valid project start and end dates.' });
+        }
+      const canManageInvoice = res.locals.studioRole === 'super_admin' || res.locals.studioRole === 'admin';
+      const charge = Number(projectCharge);
+      const safeCharge = canManageInvoice
+        ? Number.isFinite(charge) ? Math.max(0, charge) : 0
+        : current.projectCharge;
+      const parsedDiscount = Number(discountPercent);
+      const project: StudioProject = {
+        ...current,
+        title: title.trim().slice(0, 120) || current.title,
+        columns: cleanColumns,
+        tasks: scheduleTaskDueDates(allocateProjectFee(cleanTasks, safeCharge), cleanStartDate, cleanEndDate),
+        invoiceNumber: canManageInvoice ? String(invoiceNumber || '').trim().slice(0, 60) : current.invoiceNumber,
+        invoiceDueDate: canManageInvoice && typeof invoiceDueDate === 'string' ? invoiceDueDate.slice(0, 10) : current.invoiceDueDate,
+        currency: canManageInvoice && ['USD', 'CAD', 'GBP', 'EUR', 'GHS'].includes(currency) ? currency : current.currency,
+        projectCharge: safeCharge,
+        discountPercent: canManageInvoice && Number.isFinite(parsedDiscount) ? Math.min(100, Math.max(0, parsedDiscount)) : current.discountPercent,
+        projectStartDate: cleanStartDate,
+        projectEndDate: cleanEndDate,
+        invoiceNotes: canManageInvoice ? String(invoiceNotes || '').trim().slice(0, 2000) : current.invoiceNotes,
+        updatedAt: new Date().toISOString(),
+      };
+      await saveStudioProject(project);
+      return res.json(ownerProjectResponse(project, res.locals.studioRole));
+    } catch (error) {
+      console.error('Failed to save Studio project:', error);
+      return res.status(500).json({ error: 'Failed to save project.' });
+    }
+  });
+
+  app.post('/api/projects/:id/share', requireStudioProjectEditor, async (req, res) => {
+    try {
+      const project = await loadStudioProject(req.params.id);
+      if (!project) return res.status(404).json({ error: 'Project not found.' });
+      const token = randomBytes(32).toString('base64url');
+      project.shareTokenHash = hashShareToken(token);
+      project.updatedAt = new Date().toISOString();
+      await saveStudioProject(project);
+      return res.json({ token });
+    } catch (error) {
+      console.error('Failed to create project share link:', error);
+      return res.status(500).json({ error: 'Failed to create share link.' });
+    }
+  });
+
+  app.get('/api/client-project', async (req, res) => {
+    try {
+      const token = req.get('X-Project-Share-Token') || (typeof req.query.token === 'string' ? req.query.token : '');
+      if (!token || token.length > 100) return res.status(404).json({ error: 'Project link not found.' });
+      const project = await findProjectByShareTokenHash(hashShareToken(token));
+      if (!project) return res.status(404).json({ error: 'Project link not found.' });
+      return res.json({
+        title: project.title,
+        companyName: project.companyName,
+        columns: project.columns,
+        tasks: project.tasks.map(({ id, title, description, status, dueDate, priority, estimatedEffortDays }) => ({
+          id,
+          title,
+          description: summarizeTaskDescription(description),
+          status,
+          dueDate,
+          priority: ['Severe', 'High', 'Medium', 'Low'].includes(priority) ? priority : inferTaskPriority(title),
+          estimatedEffortDays: Math.max(0.5, estimatedEffortDays || 1),
+          comments: project.comments.filter((comment) => comment.taskId === id),
+        })),
+        comments: project.comments.filter((comment) => !comment.taskId),
+      });
+    } catch (error) {
+      console.error('Failed to load shared client project:', error);
+      return res.status(500).json({ error: 'Could not load this project.' });
+    }
+  });
+
+  app.get('/api/client-project/invoice', async (req, res) => {
+    try {
+      const token = req.get('X-Project-Share-Token') || '';
+      if (!token || token.length > 100) return res.status(404).json({ error: 'Project link not found.' });
+      const project = await findProjectByShareTokenHash(hashShareToken(token));
+      if (!project) return res.status(404).json({ error: 'Project link not found.' });
+      if (!Number.isFinite(project.projectCharge) || project.projectCharge <= 0) {
+        return res.status(409).json({ error: 'The Studio has not finished preparing this invoice yet.' });
+      }
+      return res.json({
+        companyName: project.companyName,
+        clientName: project.clientName,
+        clientEmail: project.clientEmail,
+        projectTitle: project.title,
+        brandColors: project.brandColors,
+        invoiceNumber: project.invoiceNumber,
+        invoiceDueDate: project.invoiceDueDate,
+        currency: project.currency,
+        projectCharge: project.projectCharge,
+        discountPercent: project.discountPercent,
+        invoiceNotes: project.invoiceNotes,
+        tasks: project.tasks.map(({ title, description, dueDate, amount }) => ({ title, description, dueDate, amount })),
+      });
+    } catch (error) {
+      console.error('Failed to load shared invoice:', error);
+      return res.status(500).json({ error: 'Could not load this invoice.' });
+    }
+  });
+
+  app.post('/api/client-project/comments', async (req, res) => {
+    try {
+      const { token, author, message, taskId } = req.body || {};
+      if (typeof token !== 'string' || token.length > 100) return res.status(404).json({ error: 'Project link not found.' });
+      const project = await findProjectByShareTokenHash(hashShareToken(token));
+      if (!project) return res.status(404).json({ error: 'Project link not found.' });
+      if (taskId && !project.tasks.some((task) => task.id === taskId)) return res.status(404).json({ error: 'Task not found.' });
+      const cleanAuthor = typeof author === 'string' ? author.trim().slice(0, 80) : '';
+      const cleanMessage = typeof message === 'string' ? message.trim().slice(0, 1000) : '';
+      if (!cleanAuthor || !cleanMessage) return res.status(400).json({ error: 'Enter your name and a comment.' });
+      const comment: ProjectComment = {
+        id: randomUUID(),
+        ...(typeof taskId === 'string' ? { taskId } : {}),
+        author: cleanAuthor,
+        message: cleanMessage,
+        createdAt: new Date().toISOString(),
+      };
+      project.comments = [...project.comments, comment].slice(-200);
+      project.updatedAt = new Date().toISOString();
+      await saveStudioProject(project);
+      return res.status(201).json({ comment });
+    } catch (error) {
+      console.error('Failed to save client project comment:', error);
+      return res.status(500).json({ error: 'Could not save your comment.' });
+    }
+  });
+
+  app.post('/api/projects/:id/comments', requireStudioProjectEditor, async (req, res) => {
+    try {
+      const project = await loadStudioProject(req.params.id);
+      if (!project) return res.status(404).json({ error: 'Project not found.' });
+      const { taskId, message } = req.body || {};
+      if (typeof taskId !== 'string' || !project.tasks.some((task) => task.id === taskId)) {
+        return res.status(404).json({ error: 'Task not found.' });
+      }
+      const cleanMessage = typeof message === 'string' ? message.trim().slice(0, 1000) : '';
+      if (!cleanMessage) return res.status(400).json({ error: 'Enter a comment.' });
+      const comment: ProjectComment = {
+        id: randomUUID(),
+        taskId,
+        author: 'Studio',
+        message: cleanMessage,
+        createdAt: new Date().toISOString(),
+      };
+      project.comments = [...project.comments, comment].slice(-500);
+      project.updatedAt = new Date().toISOString();
+      await saveStudioProject(project);
+      return res.status(201).json({ comment });
+    } catch (error) {
+      console.error('Failed to save Studio task comment:', error);
+      return res.status(500).json({ error: 'Could not save task comment.' });
+    }
+  });
 
   // API endpoint for AI-synthesized Discovery Project Brief
   app.post('/api/generate-brief', async (req, res) => {
@@ -229,7 +686,7 @@ Format cleanly as a publication-ready document with exactly these 5 numbered sec
 
       if (approved) {
         console.log(`[MERAKIFOS SUBMISSION] Approved Brief received for "${newEntry.companyName}" from ${newEntry.clientName} (${newEntry.clientEmail})!`);
-        // Automatically dispatch a copy of the approved brief to Keven (kelvensarbah@gmail.com)
+        // Automatically dispatch a copy to the private Studio recipient.
         try {
           await sendBriefCopyEmail({ submission: newEntry, recordOutbox: saveOutboxEntry });
         } catch (emailErr) {
@@ -273,7 +730,7 @@ Format cleanly as a publication-ready document with exactly these 5 numbered sec
   });
 
   // Get all submissions for spreadsheet export / review
-  app.get('/api/submissions', requireStudioOwner, async (_req, res) => {
+  app.get('/api/submissions', requireStudioAccess, async (_req, res) => {
     try {
       res.json(await loadSubmissions());
     } catch (err: any) {
@@ -283,7 +740,7 @@ Format cleanly as a publication-ready document with exactly these 5 numbered sec
   });
 
   // Download submissions as a real Microsoft Excel (.xlsx) workbook
-  app.get('/api/submissions/excel', requireStudioOwner, async (_req, res) => {
+  app.get('/api/submissions/excel', requireStudioAccess, async (_req, res) => {
     try {
       const list = await loadSubmissions();
       const buffer = buildSubmissionsExcelWorkbook(list);
@@ -303,7 +760,7 @@ Format cleanly as a publication-ready document with exactly these 5 numbered sec
   });
 
   // Download a single submission as Microsoft Excel (.xlsx)
-  app.get('/api/submissions/:id/excel', requireStudioOwner, async (req, res) => {
+  app.get('/api/submissions/:id/excel', requireStudioAccess, async (req, res) => {
     try {
       const list = await loadSubmissions();
       const sub = list.find((s) => s.id === req.params.id);
@@ -328,7 +785,7 @@ Format cleanly as a publication-ready document with exactly these 5 numbered sec
   });
 
   // Manually dispatch / resend copy of brief to founder or custom recipient
-  app.post('/api/send-brief-copy', requireStudioOwner, async (req, res) => {
+  app.post('/api/send-brief-copy', requireStudioAdmin, async (req, res) => {
     try {
       const { submissionId, recipientEmail, customNote } = req.body;
       const list = await loadSubmissions();
@@ -357,7 +814,7 @@ Format cleanly as a publication-ready document with exactly these 5 numbered sec
   });
 
   // Get email outbox log for studio portal
-  app.get('/api/outbox', requireStudioOwner, async (_req, res) => {
+  app.get('/api/outbox', requireStudioAccess, async (_req, res) => {
     try {
       res.json(await loadOutbox());
     } catch (err: any) {
@@ -367,7 +824,7 @@ Format cleanly as a publication-ready document with exactly these 5 numbered sec
   });
 
   // Delete / archive a submission
-  app.delete('/api/submissions/:id', requireStudioOwner, async (req, res) => {
+  app.delete('/api/submissions/:id', requireStudioAdmin, async (req, res) => {
     try {
       await deleteSubmission(req.params.id);
       const remaining = await loadSubmissions();
@@ -379,7 +836,7 @@ Format cleanly as a publication-ready document with exactly these 5 numbered sec
   });
 
   // Download submissions as CSV (Spreadsheet)
-  app.get('/api/submissions/csv', requireStudioOwner, async (_req, res) => {
+  app.get('/api/submissions/csv', requireStudioAccess, async (_req, res) => {
     try {
       const list = await loadSubmissions();
       const headers = [

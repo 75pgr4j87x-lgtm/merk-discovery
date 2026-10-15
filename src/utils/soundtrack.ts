@@ -4,6 +4,7 @@ class SoundTrackManager {
   private ctx: AudioContext | null = null;
   private isAmbientPlaying: boolean = false;
   private isMuted: boolean = false;
+  private areUiEffectsMuted: boolean = false;
   private masterAmbientGain: GainNode | null = null;
   private activeVoices: { osc: OscillatorNode; gain: GainNode }[] = [];
   private chordIntervalId: number | null = null;
@@ -201,9 +202,18 @@ class SoundTrackManager {
     return this.isAmbientPlaying && !this.isMuted;
   }
 
+  public toggleUiEffectsMuted(): boolean {
+    this.areUiEffectsMuted = !this.areUiEffectsMuted;
+    return this.areUiEffectsMuted;
+  }
+
+  public getAreUiEffectsMuted(): boolean {
+    return this.areUiEffectsMuted || this.isMuted;
+  }
+
   // Synthesize a tactile, organic, calm "soft water drop" sound
   public playSoftDrop(pitchVariation = 1.0) {
-    if (this.isMuted) return;
+    if (this.getAreUiEffectsMuted()) return;
     const ctx = this.getAudioContext();
     if (!ctx) return;
 
@@ -223,7 +233,7 @@ class SoundTrackManager {
 
       // Volume envelope: gentle attack, smooth exponential decay (50% reduced volume)
       dropGain.gain.setValueAtTime(0.0005, now);
-      dropGain.gain.linearRampToValueAtTime(0.07, now + 0.015);
+      dropGain.gain.linearRampToValueAtTime(0.035, now + 0.015);
       dropGain.gain.exponentialRampToValueAtTime(0.00005, now + 0.15);
 
       // Filter to soften any transient click into a round, warm droplet
@@ -247,7 +257,7 @@ class SoundTrackManager {
       harmonicOsc.frequency.exponentialRampToValueAtTime(baseFreq * 2.8, now + 0.02);
 
       harmonicGain.gain.setValueAtTime(0.0005, now);
-      harmonicGain.gain.linearRampToValueAtTime(0.02, now + 0.01);
+      harmonicGain.gain.linearRampToValueAtTime(0.01, now + 0.01);
       harmonicGain.gain.exponentialRampToValueAtTime(0.00005, now + 0.08);
 
       harmonicOsc.connect(harmonicGain);
@@ -255,6 +265,43 @@ class SoundTrackManager {
 
       harmonicOsc.start(now);
       harmonicOsc.stop(now + 0.09);
+    } catch (_) {
+      // AudioContext fallback
+    }
+  }
+
+  public playSoftSwoosh() {
+    if (this.getAreUiEffectsMuted()) return;
+    const ctx = this.getAudioContext();
+    if (!ctx) return;
+
+    try {
+      const frameCount = Math.ceil(ctx.sampleRate * 0.28);
+      const buffer = ctx.createBuffer(1, frameCount, ctx.sampleRate);
+      const channel = buffer.getChannelData(0);
+      for (let index = 0; index < frameCount; index += 1) {
+        channel[index] = (Math.random() * 2 - 1) * (1 - index / frameCount);
+      }
+
+      const source = ctx.createBufferSource();
+      const filter = ctx.createBiquadFilter();
+      const gain = ctx.createGain();
+      const now = ctx.currentTime;
+
+      source.buffer = buffer;
+      filter.type = 'bandpass';
+      filter.Q.setValueAtTime(0.65, now);
+      filter.frequency.setValueAtTime(1150, now);
+      filter.frequency.exponentialRampToValueAtTime(320, now + 0.26);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.012, now + 0.045);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
+
+      source.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      source.start(now);
+      source.stop(now + 0.29);
     } catch (_) {
       // AudioContext fallback
     }
