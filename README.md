@@ -25,6 +25,10 @@ The public intake is served at `/`. The studio portal is at `/studio` and requir
 
 For local or hosted API access, configure `FIREBASE_SERVICE_ACCOUNT` with the Firebase service-account JSON as a private environment secret, or provide Application Default Credentials. Set `STUDIO_OWNER_EMAIL` to the authorized owner email. Never put service-account credentials in frontend variables or commit them to the repository.
 
+For local Studio sign-in, add `localhost` (domain only, no protocol or port) to Firebase Authentication's authorized domains. Open the Firebase Console for project `gen-lang-client-0961556565` at [Authentication settings](https://console.firebase.google.com/project/gen-lang-client-0961556565/authentication/settings), then use Authentication > Settings > Authorized domains > Add domain. After it appears in the list, reload `http://localhost:3000/studio` and retry Google sign-in. The Firebase project owner or an editor with Authentication configuration access must make this change.
+
+Project share tokens are generated randomly, stored as hashes, and issued in URL fragments so browsers do not send them as request paths or referrers. Public project responses intentionally omit client email, brief content, invoice, currency, discounts, and task amounts. Client deletion requests also remove matching Studio project documents. The invoice generator does not calculate taxes; confirm applicable tax, recordkeeping, invoice disclosure, and consumer/privacy obligations for the relevant jurisdictions before issuing invoices or sharing client links. These safeguards are engineering controls, not a legal-compliance certification.
+
 ## Deploy on Vercel
 
 Production is deployed at https://merk-discoveryflow.vercel.app. Vercel serves the Vite build from `public/` and runs the Express API functions. Submissions and email outbox entries are stored in Firestore; Excel files are generated when requested and are not saved to the function filesystem.

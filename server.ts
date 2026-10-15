@@ -1,6 +1,7 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   StoredSubmission,
   buildSubmissionsExcelWorkbook,
@@ -11,11 +12,17 @@ import {
 import {
   deleteSubmission,
   getStudioAuth,
+  findProjectByShareTokenHash,
   loadOutbox,
+  loadStudioProject,
   loadSubmissions,
   purgeClientDataByEmail,
   saveOutboxEntry,
+  saveStudioProject,
   saveSubmission,
+  type ProjectComment,
+  type ProjectTask,
+  type StudioProject,
 } from './serverStore.js';
 import {
   sanitizeSubmissionPayload,
@@ -58,6 +65,248 @@ const ownerEmail = (process.env.STUDIO_OWNER_EMAIL || 'kelvensarbah@gmail.com').
       res.status(401).json({ error: 'Invalid or expired studio sign-in.' });
     }
   };
+
+  const hashShareToken = (token: string) => createHash('sha256').update(token).digest('hex');
+  const ownerProjectResponse = (project: StudioProject) => {
+    const { shareTokenHash: _shareTokenHash, ...visibleProject } = project;
+    return visibleProject;
+  };
+
+  const createProjectFromSubmission = (submission: StoredSubmission): StudioProject => {
+    const features = [...new Set([
+      ...(submission.coreObjectives || []),
+      ...(submission.selectedFeatures || []),
+    ])].filter(Boolean).slice(0, 12);
+    const isEcommerce = /e-?commerce|shop|store|product/i.test(
+      `${submission.primaryGoal || ''} ${features.join(' ')} ${submission.brief}`
+    );
+    const deliverables = isEcommerce
+      ? ['Discovery and content structure', 'Visual direction and interface design', 'Storefront and product setup', 'Checkout and payment integration', 'Mobile, accessibility, and performance QA', 'Client review and launch']
+      : ['Discovery and content structure', 'Visual direction and page designs', 'Website build and responsive layouts', 'Content and integrations', 'Mobile, accessibility, and performance QA', 'Client review and launch'];
+    const featureTasks = features.map((feature) => `Implement: ${feature}`);
+    const taskTitles = [...deliverables.slice(0, 3), ...featureTasks, ...deliverables.slice(3)];
+    return {
+      submissionId: submission.id,
+      title: `${submission.companyName || 'Client'} project`,
+      clientName: submission.clientName || '',
+      companyName: submission.companyName || '',
+      clientEmail: submission.clientEmail || '',
+      brandColors: submission.selectedColors || [],
+      shareTokenHash: '',
+      columns: ['Backlog', 'In progress', 'Review', 'Done'],
+      tasks: taskTitles.map((title, index) => ({
+        id: randomUUID(),
+        title,
+        description: index === 0 ? `Project outcome: ${submission.successOutcome || submission.primaryGoal || 'Deliver the approved brief.'}` : '',
+        status: 'Backlog',
+        dueDate: '',
+        estimatedEffortDays: estimateEffortDays(title),
+        amount: 0,
+      })),
+      comments: [],
+      invoiceNumber: `MF-${new Date().getFullYear()}-${submission.id.slice(-6).toUpperCase()}`,
+      invoiceDueDate: '',
+      currency: 'USD',
+      projectCharge: 0,
+      discountPercent: 0,
+      projectStartDate: '',
+      projectEndDate: '',
+      invoiceNotes: '',
+      updatedAt: new Date().toISOString(),
+    };
+  };
+
+  function estimateEffortDays(title: string): number {
+    const work = title.toLowerCase();
+    if (/checkout|payment|integration|automation|subscription|database/.test(work)) return 5;
+    if (/website build|responsive layout|storefront|product setup/.test(work)) return 8;
+    if (/implement:/.test(work)) return /e-?commerce|subscription|portal|automation|integration|database/.test(work) ? 7 : 4;
+    if (/visual direction|page design|design/.test(work)) return 5;
+    if (/content structure|copy|content/.test(work)) return 3;
+    if (/accessibility|performance|qa|quality/.test(work)) return 3;
+    if (/discovery|research|strategy/.test(work)) return 3;
+    if (/launch|handoff/.test(work)) return 2;
+    if (/client review/.test(work)) return 2;
+    return 3;
+  }
+
+  function allocateProjectFee(tasks: ProjectTask[], total: number): ProjectTask[] {
+    const totalEffort = tasks.reduce((sum, task) => sum + Math.max(0.5, task.estimatedEffortDays || 1), 0);
+    let remainingCents = Math.round(total * 100);
+    return tasks.map((task, index) => {
+      const amount = index === tasks.length - 1
+        ? remainingCents / 100
+        : Math.floor((total * Math.max(0.5, task.estimatedEffortDays || 1) / totalEffort) * 100) / 100;
+      remainingCents -= Math.round(amount * 100);
+      return { ...task, amount };
+    });
+  }
+
+  function scheduleTaskDueDates(tasks: ProjectTask[], startDate: string, endDate: string): ProjectTask[] {
+    const start = new Date(`${startDate}T00:00:00.000Z`);
+    const end = new Date(`${endDate}T00:00:00.000Z`);
+    if (!startDate || !endDate || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+      return tasks.map((task) => ({ ...task, dueDate: '' }));
+    }
+    const workdays: string[] = [];
+    const cursor = new Date(start);
+    while (cursor <= end) {
+      const day = cursor.getUTCDay();
+      if (day !== 0 && day !== 6) workdays.push(cursor.toISOString().slice(0, 10));
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    if (!workdays.length) workdays.push(startDate);
+    const totalEffort = tasks.reduce((sum, task) => sum + Math.max(0.5, task.estimatedEffortDays || 1), 0);
+    let completedEffort = 0;
+    return tasks.map((task) => {
+      completedEffort += Math.max(0.5, task.estimatedEffortDays || 1);
+      const offset = Math.min(workdays.length - 1, Math.max(0, Math.ceil((completedEffort / totalEffort) * workdays.length) - 1));
+      return { ...task, dueDate: workdays[offset] };
+    });
+  }
+
+  app.get('/api/projects/:id', requireStudioOwner, async (req, res) => {
+    try {
+      const submission = (await loadSubmissions()).find((item) => item.id === req.params.id);
+      if (!submission) return res.status(404).json({ error: 'Brief not found.' });
+      let project = await loadStudioProject(submission.id);
+      if (!project) {
+        project = createProjectFromSubmission(submission);
+        await saveStudioProject(project);
+      } else {
+        project = {
+          ...project,
+          discountPercent: Number.isFinite(project.discountPercent) ? project.discountPercent : 0,
+          projectStartDate: project.projectStartDate || '',
+          projectEndDate: project.projectEndDate || '',
+          tasks: project.tasks.map((task) => ({
+            ...task,
+            estimatedEffortDays: Number.isFinite(task.estimatedEffortDays) ? task.estimatedEffortDays : estimateEffortDays(task.title),
+          })),
+        };
+          project.tasks = scheduleTaskDueDates(
+            allocateProjectFee(project.tasks, project.projectCharge || 0),
+            project.projectStartDate,
+            project.projectEndDate,
+          );
+          await saveStudioProject(project);
+      }
+      return res.json(ownerProjectResponse(project));
+    } catch (error) {
+      console.error('Failed to load Studio project:', error);
+      return res.status(500).json({ error: 'Failed to load project.' });
+    }
+  });
+
+  app.put('/api/projects/:id', requireStudioOwner, async (req, res) => {
+    try {
+      const current = await loadStudioProject(req.params.id);
+      if (!current) return res.status(404).json({ error: 'Project not found.' });
+      const { title, columns, tasks, invoiceNumber, invoiceDueDate, currency, projectCharge, discountPercent, projectStartDate, projectEndDate, invoiceNotes } = req.body || {};
+      if (typeof title !== 'string' || !Array.isArray(columns) || !Array.isArray(tasks) || tasks.length > 200) {
+        return res.status(400).json({ error: 'Invalid project data.' });
+      }
+      const cleanColumns = columns.map((column: unknown) => String(column).trim().slice(0, 40)).filter(Boolean).slice(0, 10);
+      if (!cleanColumns.length) return res.status(400).json({ error: 'Add at least one workflow column.' });
+      const cleanTasks: ProjectTask[] = tasks.map((task: any) => ({
+        id: typeof task.id === 'string' ? task.id.slice(0, 80) : randomUUID(),
+        title: String(task.title || '').trim().slice(0, 160),
+        description: String(task.description || '').trim().slice(0, 2000),
+        status: cleanColumns.includes(task.status) ? task.status : cleanColumns[0],
+        dueDate: '',
+        estimatedEffortDays: estimateEffortDays(String(task.title || '')),
+        amount: Number.isFinite(Number(task.amount)) ? Math.max(0, Number(task.amount)) : 0,
+      })).filter((task: ProjectTask) => task.title);
+      const cleanStartDate = typeof projectStartDate === 'string' ? projectStartDate.slice(0, 10) : '';
+      const cleanEndDate = typeof projectEndDate === 'string' ? projectEndDate.slice(0, 10) : '';
+      if (cleanStartDate && cleanEndDate && cleanStartDate > cleanEndDate) {
+        return res.status(400).json({ error: 'Project end date must be on or after the start date.' });
+      }
+        const isValidDate = (date: string) => !date || /^\d{4}-\d{2}-\d{2}$/.test(date)
+          && !Number.isNaN(Date.parse(`${date}T00:00:00.000Z`))
+          && new Date(`${date}T00:00:00.000Z`).toISOString().slice(0, 10) === date;
+        if (!isValidDate(cleanStartDate) || !isValidDate(cleanEndDate)) {
+          return res.status(400).json({ error: 'Enter valid project start and end dates.' });
+        }
+      const charge = Number(projectCharge);
+      const safeCharge = Number.isFinite(charge) ? Math.max(0, charge) : 0;
+      const parsedDiscount = Number(discountPercent);
+      const project: StudioProject = {
+        ...current,
+        title: title.trim().slice(0, 120) || current.title,
+        columns: cleanColumns,
+        tasks: scheduleTaskDueDates(allocateProjectFee(cleanTasks, safeCharge), cleanStartDate, cleanEndDate),
+        invoiceNumber: String(invoiceNumber || '').trim().slice(0, 60),
+        invoiceDueDate: typeof invoiceDueDate === 'string' ? invoiceDueDate.slice(0, 10) : '',
+        currency: ['USD', 'CAD', 'GBP', 'EUR', 'GHS'].includes(currency) ? currency : 'USD',
+        projectCharge: safeCharge,
+        discountPercent: Number.isFinite(parsedDiscount) ? Math.min(100, Math.max(0, parsedDiscount)) : 0,
+        projectStartDate: cleanStartDate,
+        projectEndDate: cleanEndDate,
+        invoiceNotes: String(invoiceNotes || '').trim().slice(0, 2000),
+        updatedAt: new Date().toISOString(),
+      };
+      await saveStudioProject(project);
+      return res.json(ownerProjectResponse(project));
+    } catch (error) {
+      console.error('Failed to save Studio project:', error);
+      return res.status(500).json({ error: 'Failed to save project.' });
+    }
+  });
+
+  app.post('/api/projects/:id/share', requireStudioOwner, async (req, res) => {
+    try {
+      const project = await loadStudioProject(req.params.id);
+      if (!project) return res.status(404).json({ error: 'Project not found.' });
+      const token = randomBytes(32).toString('base64url');
+      project.shareTokenHash = hashShareToken(token);
+      project.updatedAt = new Date().toISOString();
+      await saveStudioProject(project);
+      return res.json({ token });
+    } catch (error) {
+      console.error('Failed to create project share link:', error);
+      return res.status(500).json({ error: 'Failed to create share link.' });
+    }
+  });
+
+  app.get('/api/client-project', async (req, res) => {
+    try {
+      const token = req.get('X-Project-Share-Token') || (typeof req.query.token === 'string' ? req.query.token : '');
+      if (!token || token.length > 100) return res.status(404).json({ error: 'Project link not found.' });
+      const project = await findProjectByShareTokenHash(hashShareToken(token));
+      if (!project) return res.status(404).json({ error: 'Project link not found.' });
+      return res.json({
+        title: project.title,
+        companyName: project.companyName,
+        columns: project.columns,
+        tasks: project.tasks.map(({ id, title, description, status, dueDate }) => ({ id, title, description, status, dueDate })),
+        comments: project.comments,
+      });
+    } catch (error) {
+      console.error('Failed to load shared client project:', error);
+      return res.status(500).json({ error: 'Could not load this project.' });
+    }
+  });
+
+  app.post('/api/client-project/comments', async (req, res) => {
+    try {
+      const { token, author, message } = req.body || {};
+      if (typeof token !== 'string' || token.length > 100) return res.status(404).json({ error: 'Project link not found.' });
+      const project = await findProjectByShareTokenHash(hashShareToken(token));
+      if (!project) return res.status(404).json({ error: 'Project link not found.' });
+      const cleanAuthor = typeof author === 'string' ? author.trim().slice(0, 80) : '';
+      const cleanMessage = typeof message === 'string' ? message.trim().slice(0, 1000) : '';
+      if (!cleanAuthor || !cleanMessage) return res.status(400).json({ error: 'Enter your name and a comment.' });
+      const comment: ProjectComment = { id: randomUUID(), author: cleanAuthor, message: cleanMessage, createdAt: new Date().toISOString() };
+      project.comments = [...project.comments, comment].slice(-200);
+      project.updatedAt = new Date().toISOString();
+      await saveStudioProject(project);
+      return res.status(201).json({ comment });
+    } catch (error) {
+      console.error('Failed to save client project comment:', error);
+      return res.status(500).json({ error: 'Could not save your comment.' });
+    }
+  });
 
   // API endpoint for AI-synthesized Discovery Project Brief
   app.post('/api/generate-brief', async (req, res) => {

@@ -5,11 +5,16 @@ import { CookieConsent } from './components/compliance/CookieConsent';
 import { INITIAL_ANSWERS } from './data/discoveryQuestions';
 import { DiscoveryAnswers } from './types/questionnaire';
 import { generateProjectBrief } from './services/briefGenerator';
+import { ClientProjectView } from './components/ClientProjectView';
 
 export default function App() {
   const [answers, setAnswers] = React.useState<DiscoveryAnswers>(INITIAL_ANSWERS);
   const isStudioRoute =
     typeof window !== 'undefined' && window.location.pathname.toLowerCase().startsWith('/studio');
+  const clientProjectToken = typeof window !== 'undefined'
+    ? new URLSearchParams(window.location.hash.slice(1)).get('project')
+      || new URLSearchParams(window.location.search).get('project')
+    : null;
 
   // Callback to synthesize brief
   const handleCompleteAndSynthesize = async (latestAnswers?: DiscoveryAnswers): Promise<string> => {
@@ -47,6 +52,10 @@ export default function App() {
         <CookieConsent />
       </>
     );
+  }
+
+  if (clientProjectToken) {
+    return <ClientProjectView token={clientProjectToken} />;
   }
 
   // 2. RENDER: Client-Facing Discovery (Pristine, zero studio portal UI or login buttons for clients)

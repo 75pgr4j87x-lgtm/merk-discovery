@@ -11,7 +11,47 @@ import type { OutboxEntry, StoredSubmission } from './serverEmailAndExcel.js';
 
 const SUBMISSIONS_COLLECTION = 'studioSubmissions';
 const OUTBOX_COLLECTION = 'emailOutbox';
+const PROJECTS_COLLECTION = 'studioProjects';
 const FIRESTORE_BATCH_LIMIT = 450;
+
+export interface ProjectTask {
+  id: string;
+  title: string;
+  description: string;
+  status: string;
+  dueDate: string;
+  estimatedEffortDays: number;
+  amount: number;
+}
+
+export interface ProjectComment {
+  id: string;
+  author: string;
+  message: string;
+  createdAt: string;
+}
+
+export interface StudioProject {
+  submissionId: string;
+  title: string;
+  clientName: string;
+  companyName: string;
+  clientEmail: string;
+  brandColors: string[];
+  shareTokenHash: string;
+  columns: string[];
+  tasks: ProjectTask[];
+  comments: ProjectComment[];
+  invoiceNumber: string;
+  invoiceDueDate: string;
+  currency: string;
+  projectCharge: number;
+  discountPercent: number;
+  projectStartDate: string;
+  projectEndDate: string;
+  invoiceNotes: string;
+  updatedAt: string;
+}
 
 let firebaseApp: App | undefined;
 
@@ -37,6 +77,27 @@ function getSubmissionsCollection() {
 
 function getOutboxCollection() {
   return getFirestore(getFirebaseApp()).collection(OUTBOX_COLLECTION);
+}
+
+function getProjectsCollection() {
+  return getFirestore(getFirebaseApp()).collection(PROJECTS_COLLECTION);
+}
+
+export async function loadStudioProject(id: string): Promise<StudioProject | null> {
+  const document = await getProjectsCollection().doc(id).get();
+  return document.exists ? document.data() as StudioProject : null;
+}
+
+export async function saveStudioProject(project: StudioProject): Promise<void> {
+  await getProjectsCollection().doc(project.submissionId).set(project);
+}
+
+export async function findProjectByShareTokenHash(tokenHash: string): Promise<StudioProject | null> {
+  const snapshot = await getProjectsCollection()
+    .where('shareTokenHash', '==', tokenHash)
+    .limit(1)
+    .get();
+  return snapshot.empty ? null : snapshot.docs[0].data() as StudioProject;
 }
 
 export async function loadSubmissions(): Promise<StoredSubmission[]> {
@@ -89,9 +150,10 @@ export async function purgeClientDataByEmail(clientEmail: string): Promise<{
   remainingCount: number;
 }> {
   const normalizedEmail = clientEmail.trim().toLowerCase();
-  const [submissionsSnapshot, outboxSnapshot] = await Promise.all([
+  const [submissionsSnapshot, outboxSnapshot, projectsSnapshot] = await Promise.all([
     getSubmissionsCollection().get(),
     getOutboxCollection().get(),
+    getProjectsCollection().get(),
   ]);
   const matchingSubmissions = submissionsSnapshot.docs.filter(
     (document) => (document.data().clientEmail || '').trim().toLowerCase() === normalizedEmail
@@ -99,9 +161,13 @@ export async function purgeClientDataByEmail(clientEmail: string): Promise<{
   const matchingOutbox = outboxSnapshot.docs.filter(
     (document) => (document.data().clientEmail || '').trim().toLowerCase() === normalizedEmail
   );
+  const matchingProjects = projectsSnapshot.docs.filter(
+    (document) => (document.data().clientEmail || '').trim().toLowerCase() === normalizedEmail
+  );
   const references = [
     ...matchingSubmissions.map((document) => document.ref),
     ...matchingOutbox.map((document) => document.ref),
+    ...matchingProjects.map((document) => document.ref),
   ];
   const db = getFirestore(getFirebaseApp());
 

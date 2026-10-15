@@ -35,9 +35,11 @@ import {
   Key,
   EyeOff,
   Shield,
+  KanbanSquare,
 } from 'lucide-react';
 import { exportBriefAsPdf } from '../../utils/pdfGenerator';
 import { cleanBriefDocument } from '../../services/briefGenerator';
+import { ProjectWorkspace } from './ProjectWorkspace';
 
 interface StoredSubmission {
   id: string;
@@ -120,6 +122,7 @@ export const StudioPortalApp: React.FC = () => {
   const [viewingAnswersSub, setViewingAnswersSub] = React.useState<StoredSubmission | null>(null);
   const [isOutboxOpen, setIsOutboxOpen] = React.useState(false);
   const [previewEmail, setPreviewEmail] = React.useState<OutboxEntry | null>(null);
+  const [projectWorkspaceId, setProjectWorkspaceId] = React.useState<string | null>(null);
 
   // Action status
   const [sendingEmailId, setSendingEmailId] = React.useState<string | null>(null);
@@ -671,6 +674,14 @@ export const StudioPortalApp: React.FC = () => {
 
                     {/* Right action buttons */}
                     <div className="flex flex-wrap items-center gap-2 self-start lg:self-center">
+                      <button
+                        onClick={() => setProjectWorkspaceId(sub.id)}
+                        className="px-3 py-2 bg-[#3F4A32] hover:bg-[#343D29] text-[#FAF6F1] rounded-xl text-xs font-body font-normal transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+                        title="Open the project workflow and invoice"
+                      >
+                        <KanbanSquare className="w-3.5 h-3.5 text-[#D9A441]" />
+                        <span>Project</span>
+                      </button>
                       {/* View Brief Button */}
                       <button
                         onClick={() => setViewingBriefSub(sub)}
@@ -1048,6 +1059,12 @@ export const StudioPortalApp: React.FC = () => {
           <span>Private Founder View • Keven Sarbah ({DEFAULT_OWNER_EMAIL})</span>
         </div>
       </footer>
+      {projectWorkspaceId && (
+        <ProjectWorkspace
+          submissionId={projectWorkspaceId}
+          onClose={() => setProjectWorkspaceId(null)}
+        />
+      )}
     </div>
   );
 };
