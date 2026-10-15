@@ -78,8 +78,9 @@ export const ClientProjectView: React.FC<{ token: string }> = ({ token }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token, author, message, taskId }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Could not send comment.');
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || `Could not send comment (HTTP ${response.status}).`);
+      if (!data?.comment) throw new Error('The comment was accepted, but the server returned no saved comment.');
       setMessage('');
       setProject((current) => {
         if (!current) return current;

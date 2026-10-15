@@ -355,7 +355,13 @@ const ownerEmail = (process.env.STUDIO_OWNER_EMAIL || 'kelvensarbah@gmail.com').
       const cleanAuthor = typeof author === 'string' ? author.trim().slice(0, 80) : '';
       const cleanMessage = typeof message === 'string' ? message.trim().slice(0, 1000) : '';
       if (!cleanAuthor || !cleanMessage) return res.status(400).json({ error: 'Enter your name and a comment.' });
-      const comment: ProjectComment = { id: randomUUID(), taskId: typeof taskId === 'string' ? taskId : undefined, author: cleanAuthor, message: cleanMessage, createdAt: new Date().toISOString() };
+      const comment: ProjectComment = {
+        id: randomUUID(),
+        ...(typeof taskId === 'string' ? { taskId } : {}),
+        author: cleanAuthor,
+        message: cleanMessage,
+        createdAt: new Date().toISOString(),
+      };
       project.comments = [...project.comments, comment].slice(-200);
       project.updatedAt = new Date().toISOString();
       await saveStudioProject(project);
