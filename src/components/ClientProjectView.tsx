@@ -1,7 +1,8 @@
 import React from 'react';
-import { MessageCircle, MessageSquare, Send, Sparkles, Volume2, VolumeX } from 'lucide-react';
+import { Download, MessageCircle, MessageSquare, Send, Sparkles, Volume2, VolumeX } from 'lucide-react';
 import { ProjectJourneyProgress } from './ProjectJourneyProgress';
 import { soundTrack } from '../utils/soundtrack';
+import { downloadClientInvoicePdf, type ClientInvoice } from '../utils/invoicePdfGenerator';
 
 type TaskPriority = 'Severe' | 'High' | 'Medium' | 'Low';
 
@@ -25,11 +26,11 @@ export const ClientProjectView: React.FC<{ token: string }> = ({ token }) => {
   const [author, setAuthor] = React.useState('');
   const [message, setMessage] = React.useState('');
   const [activeTaskId, setActiveTaskId] = React.useState<string | null>(null);
-  const [selectedJourneyStage, setSelectedJourneyStage] = React.useState<number | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [sending, setSending] = React.useState(false);
   const [error, setError] = React.useState('');
   const [effectsMuted, setEffectsMuted] = React.useState(soundTrack.getAreUiEffectsMuted());
+  const [downloadingInvoice, setDownloadingInvoice] = React.useState(false);
 
   const handleButtonSound = (event: React.MouseEvent<HTMLElement>) => {
     const target = event.target;
@@ -99,6 +100,23 @@ export const ClientProjectView: React.FC<{ token: string }> = ({ token }) => {
     }
   };
 
+  const downloadInvoice = async () => {
+    setDownloadingInvoice(true);
+    setError('');
+    try {
+      const response = await fetch('/api/client-project/invoice', {
+        headers: { 'X-Project-Share-Token': token },
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not download this invoice.');
+      downloadClientInvoicePdf(data as ClientInvoice);
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : 'Could not download this invoice.');
+    } finally {
+      setDownloadingInvoice(false);
+    }
+  };
+
   if (loading) return <main className="merakifos-ui grid min-h-screen place-items-center bg-[#FAF6F1] text-sm text-[#3F4A32]">Loading project...</main>;
   if (!project) return <main className="merakifos-ui grid min-h-screen place-items-center bg-[#FAF6F1] px-5 text-center"><div className="rounded-2xl border border-[#E5EADF] bg-white p-8"><div className="mb-2 text-xs uppercase tracking-[0.16em] text-[#7C8B5F]">Merakifos Studio</div><h1 className="text-xl font-semibold">Project link unavailable</h1><p className="mt-2 text-sm text-[#3F4A32]">{error || 'This link may have expired or been replaced.'}</p></div></main>;
 
@@ -114,17 +132,10 @@ export const ClientProjectView: React.FC<{ token: string }> = ({ token }) => {
         <section>
           <div className="mb-4 flex items-end justify-between"><div><h2 className="text-base font-semibold">Workflow</h2><p className="mt-1 text-xs text-[#3F4A32]">Current milestones and target dates</p></div><button onClick={loadProject} className="border border-[#E5EADF] bg-white px-3 py-2 text-xs text-[#3F4A32] hover:bg-[#F1F2EC]">Refresh</button></div>
           <div className="mb-5">
-            <ProjectJourneyProgress
-              columns={project.columns}
-              tasks={project.tasks}
-              onSelectStage={(index) => {
-                setSelectedJourneyStage(index);
-                document.getElementById(`client-stage-${index}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
-              }}
-            />
+            <ProjectJourneyProgress columns={project.columns} tasks={project.tasks} />
           </div>
           <div className="flex items-start gap-3 overflow-x-auto pb-3">
-            {project.columns.map((column, columnIndex) => <section key={column} id={`client-stage-${columnIndex}`} className={`merakifos-column min-h-52 min-w-[230px] flex-1 border border-[#E5EADF] bg-[#F1F2EC] transition-shadow ${selectedJourneyStage === columnIndex ? 'ring-2 ring-[#D9A441]' : ''}`}>
+            {project.columns.map((column) => <section key={column} className="merakifos-column min-h-52 min-w-[230px] flex-1 border border-[#E5EADF] bg-[#F1F2EC]">
               <h3 className="border-b border-[#E5EADF] bg-white px-3 py-2 text-xs font-semibold">{column}<span className="ml-2 font-normal text-[#7C8B5F]">{project.tasks.filter((task) => task.status === column).length}</span></h3>
               <div className="space-y-2 p-2">{project.tasks.filter((task) => task.status === column).map((task) => <article key={task.id} className="min-w-0 border border-[#E5EADF] bg-white p-3">
                 <h4 className="whitespace-normal break-words text-sm font-semibold leading-snug">{task.title}</h4>
@@ -147,6 +158,7 @@ export const ClientProjectView: React.FC<{ token: string }> = ({ token }) => {
           </div>
         </section>
         <aside className="border-t border-[#E5EADF] pt-5 lg:border-l lg:border-t-0 lg:pl-6 lg:pt-0">
+          <button onClick={downloadInvoice} disabled={downloadingInvoice} className="mb-6 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#3F4A32] px-4 py-3 text-sm text-[#FAF6F1] disabled:opacity-60"><Download size={16} className="text-[#D9A441]" />{downloadingInvoice ? 'Preparing invoice...' : 'Download invoice PDF'}</button>
           <div className="mb-4 flex items-center gap-2"><MessageSquare size={16} /><h2 className="text-sm font-semibold">Project comments</h2></div>
           <form onSubmit={sendComment} className="space-y-2 border-b border-[#E5EADF] pb-5">
             <label className="block text-[11px] text-[#3F4A32]">Your name<input value={author} onChange={(event) => setAuthor(event.target.value)} maxLength={80} required className="mt-1 w-full border border-[#E5EADF] bg-white px-2.5 py-2 text-xs text-[#3F4A32]" /></label>

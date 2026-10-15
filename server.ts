@@ -316,6 +316,35 @@ const ownerEmail = (process.env.STUDIO_OWNER_EMAIL || 'kelvensarbah@gmail.com').
     }
   });
 
+  app.get('/api/client-project/invoice', async (req, res) => {
+    try {
+      const token = req.get('X-Project-Share-Token') || '';
+      if (!token || token.length > 100) return res.status(404).json({ error: 'Project link not found.' });
+      const project = await findProjectByShareTokenHash(hashShareToken(token));
+      if (!project) return res.status(404).json({ error: 'Project link not found.' });
+      if (!Number.isFinite(project.projectCharge) || project.projectCharge <= 0) {
+        return res.status(409).json({ error: 'The Studio has not finished preparing this invoice yet.' });
+      }
+      return res.json({
+        companyName: project.companyName,
+        clientName: project.clientName,
+        clientEmail: project.clientEmail,
+        projectTitle: project.title,
+        brandColors: project.brandColors,
+        invoiceNumber: project.invoiceNumber,
+        invoiceDueDate: project.invoiceDueDate,
+        currency: project.currency,
+        projectCharge: project.projectCharge,
+        discountPercent: project.discountPercent,
+        invoiceNotes: project.invoiceNotes,
+        tasks: project.tasks.map(({ title, description, dueDate, amount }) => ({ title, description, dueDate, amount })),
+      });
+    } catch (error) {
+      console.error('Failed to load shared invoice:', error);
+      return res.status(500).json({ error: 'Could not load this invoice.' });
+    }
+  });
+
   app.post('/api/client-project/comments', async (req, res) => {
     try {
       const { token, author, message, taskId } = req.body || {};

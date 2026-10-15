@@ -10,7 +10,6 @@ interface JourneyTask {
 interface ProjectJourneyProgressProps {
   columns: string[];
   tasks: JourneyTask[];
-  onSelectStage?: (index: number) => void;
 }
 
 const journeyStops = ['Listen', 'Imagine', 'Craft', 'Refine', 'Unveil'];
@@ -31,7 +30,7 @@ export const calculateProjectProgress = (columns: string[], tasks: JourneyTask[]
   return totalEffort ? Math.round(completedEffort / totalEffort * 100) : 0;
 };
 
-export const ProjectJourneyProgress: React.FC<ProjectJourneyProgressProps> = ({ columns, tasks, onSelectStage }) => {
+export const ProjectJourneyProgress: React.FC<ProjectJourneyProgressProps> = ({ columns, tasks }) => {
   const progress = calculateProjectProgress(columns, tasks);
   const completedCount = tasks.filter((task) => columns.indexOf(task.status) === columns.length - 1).length;
 
@@ -56,24 +55,18 @@ export const ProjectJourneyProgress: React.FC<ProjectJourneyProgressProps> = ({ 
             const target = index / (journeyStops.length - 1) * 100;
             const reached = progress >= target;
             const isCurrent = index === Math.min(journeyStops.length - 1, Math.round(progress / 100 * (journeyStops.length - 1)));
-            const stageIndex = columns.length > 1
-              ? Math.round(index / (journeyStops.length - 1) * (columns.length - 1))
-              : 0;
             return (
-              <button
+              <div
                 key={stop}
-                type="button"
-                onClick={() => onSelectStage?.(stageIndex)}
-                className="group flex min-w-0 flex-1 flex-col items-center gap-2 text-center focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#3F4A32]"
-                aria-label={`Go to ${stop} journey step`}
+                className="flex min-w-0 flex-1 flex-col items-center gap-2 text-center"
                 aria-current={isCurrent ? 'step' : undefined}
-                title={`${stop} · Kanban stage ${columns[stageIndex] || 'not set'}`}
+                title={stop}
               >
                 <span className={`relative z-[1] grid h-8 w-8 place-items-center rounded-full border-2 transition-colors duration-300 ${reached ? 'border-[#3F4A32] bg-[#3F4A32] text-[#FAF6F1]' : 'border-[#C8D1C1] bg-white text-[#7C8B5F]'} ${isCurrent ? 'ring-4 ring-[#D9A441]/25' : ''}`}>
                   {reached && !isCurrent ? <Check size={14} aria-hidden="true" /> : isCurrent && progress < 100 ? <MapPin size={14} aria-hidden="true" /> : <span className="text-[10px] font-semibold">{index + 1}</span>}
                 </span>
-                <span className={`max-w-full break-words text-xs leading-tight transition-colors group-hover:text-[#3F4A32] ${isCurrent ? 'font-semibold text-[#3F4A32]' : 'text-[#6F786F]'}`}>{stop}</span>
-              </button>
+                <span className={`max-w-full break-words text-xs leading-tight ${isCurrent ? 'font-semibold text-[#3F4A32]' : 'text-[#6F786F]'}`}>{stop}</span>
+              </div>
             );
           })}
         </div>
