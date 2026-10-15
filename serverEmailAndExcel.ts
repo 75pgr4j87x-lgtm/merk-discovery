@@ -53,7 +53,7 @@ export interface OutboxEntry {
   error?: string;
 }
 
-export const DEFAULT_FOUNDER_EMAIL = process.env.STUDIO_OWNER_EMAIL || 'kelvensarbah@gmail.com';
+export const DEFAULT_FOUNDER_EMAIL = process.env.STUDIO_OWNER_EMAIL || '';
 
 /**
  * Builds a multi-sheet Microsoft Excel (.xlsx) workbook from submissions
@@ -374,7 +374,7 @@ export function buildBriefHtmlEmail(sub: StoredSubmission, customNote?: string):
                       Merakifos Studio Engine • Recorded in Master Excel Sheet
                     </div>
                     <div style="font-size: 11px; color: #7C8B5F; margin-top: 2px;">
-                      Sent automatically to Keven Sarbah (kelvensarbah@gmail.com). All rights reserved.
+                      Sent automatically by Merakifos Studio. All rights reserved.
                     </div>
                   </td>
                   <td align="right">

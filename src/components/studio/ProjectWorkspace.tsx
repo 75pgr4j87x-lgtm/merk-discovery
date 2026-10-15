@@ -12,7 +12,7 @@ interface ProjectTask {
   dueDate: string;
   priority: 'Severe' | 'High' | 'Medium' | 'Low';
   estimatedEffortDays: number;
-  amount: number;
+  amount?: number;
 }
 
 interface ProjectComment {
@@ -33,11 +33,11 @@ interface StudioProject {
   columns: string[];
   tasks: ProjectTask[];
   comments: ProjectComment[];
-  invoiceNumber: string;
-  invoiceDueDate: string;
-  currency: string;
-  projectCharge: number;
-  discountPercent: number;
+  invoiceNumber?: string;
+  invoiceDueDate?: string;
+  currency?: string;
+  projectCharge?: number;
+  discountPercent?: number;
   projectStartDate: string;
   projectEndDate: string;
   invoiceNotes: string;
@@ -47,6 +47,8 @@ interface StudioProject {
 interface ProjectWorkspaceProps {
   submissionId: string;
   onClose: () => void;
+  canEdit: boolean;
+  canManageInvoice: boolean;
 }
 
 const currencies = ['USD', 'CAD', 'GBP', 'EUR', 'GHS'];
@@ -57,17 +59,18 @@ const priorityStyle: Record<ProjectTask['priority'], string> = {
   Medium: 'border-amber-200 bg-amber-50 text-amber-900',
   Low: 'border-[#D9E3D2] bg-[#F1F5EE] text-[#526A48]',
 };
-const money = (amount: number, currency: string) => new Intl.NumberFormat(undefined, {
+const money = (amount: number, currency = 'USD') => new Intl.NumberFormat(undefined, {
   style: 'currency', currency, maximumFractionDigits: 2,
 }).format(amount || 0);
 
-const distributeProjectFee = (tasks: ProjectTask[], total: number) => {
+const distributeProjectFee = (tasks: ProjectTask[], total: number | undefined) => {
+  const safeTotal = Number.isFinite(total) ? Number(total) : 0;
   const totalEffort = tasks.reduce((sum, task) => sum + Math.max(0.5, task.estimatedEffortDays || 1), 0);
-  let remainingCents = Math.round(total * 100);
+  let remainingCents = Math.round(safeTotal * 100);
   return tasks.map((task) => {
     const amount = task === tasks[tasks.length - 1]
       ? remainingCents / 100
-      : Math.floor((total * Math.max(0.5, task.estimatedEffortDays || 1) / totalEffort) * 100) / 100;
+      : Math.floor((safeTotal * Math.max(0.5, task.estimatedEffortDays || 1) / totalEffort) * 100) / 100;
     remainingCents -= Math.round(amount * 100);
     return { ...task, amount };
   });
@@ -112,9 +115,9 @@ const scheduleTaskDates = (tasks: ProjectTask[], startDate: string, endDate: str
   });
 };
 
-export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId, onClose }) => {
+export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId, onClose, canEdit, canManageInvoice }) => {
   const [project, setProject] = React.useState<StudioProject | null>(null);
-  const [activeTab, setActiveTab] = React.useState<'board' | 'invoice'>('board');
+  const [activeTab, setActiveTab] = React.useState<'board' | 'comments' | 'invoice'>('board');
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
   const [dirty, setDirty] = React.useState(false);
@@ -152,7 +155,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
   });
 
   const saveProject = async () => {
-    if (!project) return false;
+    if (!project || !canEdit) return false;
     setSaving(true);
     setNotice('');
     try {
@@ -175,6 +178,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
   };
 
   const createShareLink = async () => {
+      if (!canEdit) return;
     if (dirty && !(await saveProject())) return;
     try {
       const response = await studioFetch(`/api/projects/${encodeURIComponent(submissionId)}/share`, { method: 'POST' });
@@ -239,7 +243,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
 
   const updateCharge = (value: number) => changeProject((current) => {
     const safeValue = Math.max(0, Number.isFinite(value) ? value : 0);
-    const tasks = distributeProjectFee(current.tasks, safeValue);
+    const tasks = distributeProjectFee(current.tasks, safeValue || 0);
     return { ...current, projectCharge: safeValue, tasks };
   });
 
@@ -260,7 +264,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
   if (loading) return <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 text-sm">Loading project workspace...</div>;
   if (!project) return <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4"><div className="bg-white p-6 rounded-lg">{notice || 'Project unavailable.'}<button onClick={onClose} className="ml-4 underline">Close</button></div></div>;
 
-  const subtotal = project.projectCharge;
+  const subtotal = project.projectCharge || 0;
   const discount = subtotal * Math.min(100, Math.max(0, project.discountPercent || 0)) / 100;
   const discountedSubtotal = subtotal - discount;
   const miscellaneous = discountedSubtotal * 0.1;
@@ -276,7 +280,8 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
         </div>
         <div className="flex items-center gap-2">
           <button onClick={createShareLink} className="inline-flex items-center gap-2 border border-[#E5EADF] bg-white px-3 py-2 text-xs text-[#3F4A32] hover:bg-[#FAF6F1]"><Clipboard size={15} /> Share with client</button>
-          <button onClick={saveProject} disabled={!dirty || saving} className="inline-flex items-center gap-2 bg-[#3F4A32] px-3 py-2 text-xs text-[#FAF6F1] disabled:opacity-40"><Save size={15} /> {saving ? 'Saving' : dirty ? 'Save changes' : 'Saved'}</button>
+          {canEdit && <button onClick={createShareLink} className="inline-flex items-center gap-2 border border-[#E5EADF] bg-white px-3 py-2 text-xs text-[#3F4A32] hover:bg-[#FAF6F1]"><Clipboard size={15} /> Share with client</button>}
+          {canEdit && <button onClick={saveProject} disabled={!dirty || saving} className="inline-flex items-center gap-2 bg-[#3F4A32] px-3 py-2 text-xs text-[#FAF6F1] disabled:opacity-40"><Save size={15} /> {saving ? 'Saving' : dirty ? 'Save changes' : 'Saved'}</button>}
           <button onClick={onClose} aria-label="Close project" className="border border-transparent p-2 hover:border-[#CDD4CC]"><X size={17} /></button>
         </div>
       </header>
@@ -285,10 +290,12 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
         {shareLink && <div className="workspace-no-print mb-4 break-all border-l-2 border-[#788F68] bg-white px-3 py-2 text-xs">{shareLink}</div>}
         <div className="workspace-no-print mb-5 flex border-b border-[#D9DED7]">
           <button onClick={() => setActiveTab('board')} className={`border-b-2 px-4 py-2 text-sm ${activeTab === 'board' ? 'border-[#25312B] font-semibold' : 'border-transparent text-[#6F786F]'}`}>Workflow board</button>
-          <button onClick={() => setActiveTab('invoice')} className={`border-b-2 px-4 py-2 text-sm ${activeTab === 'invoice' ? 'border-[#25312B] font-semibold' : 'border-transparent text-[#6F786F]'}`}>Invoice</button>
+          <button onClick={() => setActiveTab('comments')} className={`border-b-2 px-4 py-2 text-sm ${activeTab === 'comments' ? 'border-[#25312B] font-semibold' : 'border-transparent text-[#6F786F]'}`}>Comments ({project.comments.length})</button>
+          {canManageInvoice && <button onClick={() => setActiveTab('invoice')} className={`border-b-2 px-4 py-2 text-sm ${activeTab === 'invoice' ? 'border-[#25312B] font-semibold' : 'border-transparent text-[#6F786F]'}`}>Invoice</button>}
         </div>
 
         {activeTab === 'board' && <section className="workspace-board">
+          <fieldset disabled={!canEdit} className="contents">
           <div className="workspace-no-print mb-4 flex flex-wrap items-end justify-between gap-3">
             <div><h2 className="text-base font-semibold">Project workflow</h2><p className="text-xs text-[#6F786F]">Drag tasks between stages. Edit titles and scope; set project dates above to generate task targets.</p></div>
             <button onClick={addColumn} className="inline-flex items-center gap-2 border border-[#E5EADF] bg-white px-3 py-2 text-xs text-[#3F4A32]"><Plus size={15} /> Add stage</button>
@@ -305,7 +312,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
           </div>
           <div className="flex items-start gap-3 overflow-x-auto pb-4">
             {project.columns.map((column, columnIndex) => <section key={`${columnIndex}-${column}`} onDragOver={(event) => event.preventDefault()} onDrop={() => {
-              if (draggedTask) {
+              if (canEdit && draggedTask) {
                 const previousStatus = project.tasks.find((task) => task.id === draggedTask)?.status;
                 if (previousStatus !== column) soundTrack.playSoftSwoosh();
                 patchTask(draggedTask, { status: column });
@@ -318,7 +325,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
                 <button onClick={() => removeColumn(columnIndex)} title="Remove stage" className="p-1 text-[#6F786F] hover:text-red-700"><Trash2 size={13} /></button>
               </div>
               <div className="min-h-36 space-y-2 p-2">
-                {project.tasks.filter((task) => task.status === column).map((task) => <article key={task.id} draggable onDragStart={() => setDraggedTask(task.id)} onDragEnd={() => setDraggedTask(null)} className="min-w-0 border border-[#D9DED7] bg-white p-3 shadow-sm">
+                {project.tasks.filter((task) => task.status === column).map((task) => <article key={task.id} draggable={canEdit} onDragStart={() => canEdit && setDraggedTask(task.id)} onDragEnd={() => setDraggedTask(null)} className="min-w-0 border border-[#D9DED7] bg-white p-3 shadow-sm">
                   <div className="mb-2 flex items-center gap-1">
                     <GripVertical size={14} className="shrink-0 cursor-grab text-[#899188]" />
                     <textarea rows={2} maxLength={160} value={task.title} onChange={(event) => patchTask(task.id, { title: event.target.value })} className="min-h-10 min-w-0 flex-1 resize-y whitespace-pre-wrap break-words text-xs font-semibold leading-snug outline-none" aria-label="Task title" />
@@ -343,14 +350,15 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
                   </div>
                   <div className="flex items-center gap-2 border-t border-[#E5EADF] pt-2 text-xs text-[#3F4A32]"><CalendarDays size={14} className="text-[#7C8B5F]" />Target date: {task.dueDate ? new Date(`${task.dueDate}T12:00:00`).toLocaleDateString() : 'Set project dates above'}</div>
                 </article>)}
-                <button onClick={() => addTask(column)} className="flex w-full items-center justify-center gap-1 rounded-xl border border-dashed border-[#BFC8BE] py-2 text-xs text-[#3F4A32] hover:bg-white"><Plus size={14} /> Add task</button>
+                {canEdit && <button onClick={() => addTask(column)} className="flex w-full items-center justify-center gap-1 rounded-xl border border-dashed border-[#BFC8BE] py-2 text-xs text-[#3F4A32] hover:bg-white"><Plus size={14} /> Add task</button>}
               </div>
             </section>)}
           </div>
           <div className="workspace-no-print mt-3 text-xs text-[#6F786F]">{project.tasks.length} tasks · Dates are generated from estimated effort and the selected project window.</div>
+          </fieldset>
         </section>}
 
-        {activeTab === 'invoice' && <section className="mx-auto max-w-[900px]">
+        {activeTab === 'invoice' && canManageInvoice && <section className="mx-auto max-w-[900px]">
           <div className="workspace-no-print mb-4 grid gap-3 rounded-2xl border border-[#E5EADF] bg-white p-4 sm:grid-cols-2">
             <label className="text-xs text-[#69736A]">Total project fee
               <input type="number" min="0" step="0.01" value={project.projectCharge} onChange={(event) => updateCharge(Number(event.target.value) || 0)} className="mt-1 block w-full border border-[#E5EADF] bg-[#FAF6F1] px-3 py-2 text-sm text-[#3F4A32]" />
@@ -405,6 +413,18 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
           <div className="mt-10 border-t border-[#E5E9E3] pt-4 text-center text-[10px] uppercase tracking-[0.14em] text-[#7C867D]">Merakifos Studio · Thoughtful work, made with care</div>
           </section>
         </section>}
+        {activeTab === 'comments' && <section className="mx-auto max-w-4xl">
+          <div className="mb-4"><h2 className="text-lg font-semibold">Project discussion</h2><p className="text-sm text-[#6F786F]">Comments from you and the client, including task-specific threads.</p></div>
+          {project.comments.length ? <div className="divide-y divide-[#E5EADF] rounded-2xl border border-[#E5EADF] bg-white px-4">
+            {[...project.comments].reverse().map((comment) => {
+              const task = comment.taskId ? project.tasks.find((item) => item.id === comment.taskId) : null;
+              return <article key={comment.id} className="py-4">
+                <div className="mb-1 flex flex-wrap items-center justify-between gap-2"><div className="flex items-center gap-2"><strong className="text-sm">{comment.author}</strong>{task && <span className="rounded-lg bg-[#F1F2EC] px-2 py-1 text-xs text-[#526A48]">{task.title}</span>}</div><time className="text-xs text-[#7C8B5F]">{new Date(comment.createdAt).toLocaleString()}</time></div>
+                <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{comment.message}</p>
+              </article>;
+            })}
+          </div> : <div className="rounded-2xl border border-dashed border-[#CDD4CC] bg-white p-10 text-center text-sm text-[#6F786F]">No project comments yet.</div>}
+        </section>}
         {activeCommentTaskId && (() => {
           const task = project.tasks.find((item) => item.id === activeCommentTaskId);
           if (!task) return null;
@@ -421,7 +441,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
                   <p className="whitespace-pre-wrap break-words text-sm">{comment.message}</p>
                 </article>) : <p className="text-sm text-[#7C8B5F]">No comments on this task yet.</p>}
               </div>
-              <form onSubmit={sendTaskComment} className="space-y-3">
+              {canEdit && <form onSubmit={sendTaskComment} className="space-y-3">
                 <label className="block text-xs text-[#3F4A32]">Add a comment<textarea autoFocus required maxLength={1000} rows={3} value={commentDraft} onChange={(event) => setCommentDraft(event.target.value)} className="mt-1 w-full rounded-xl border border-[#E5EADF] px-3 py-2 text-sm" placeholder="Write a task update or question" /></label>
                 <div className="flex justify-end"><button disabled={commentSending || !commentDraft.trim()} className="inline-flex items-center gap-2 rounded-xl bg-[#3F4A32] px-4 py-2.5 text-sm text-[#FAF6F1] disabled:opacity-50"><MessageCircle size={15} className="text-[#D9A441]" />{commentSending ? 'Sending...' : 'Add comment'}</button></div>
               </form>

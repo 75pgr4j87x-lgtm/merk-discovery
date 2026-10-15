@@ -60,7 +60,7 @@ export const DataDeletionModal: React.FC<DataDeletionModalProps> = ({
       }
     } catch {
       setStatus('error');
-      setMessage('Network error connecting to deletion service. Please reach out to kelvensarbah@gmail.com directly.');
+      setMessage('Network error connecting to the deletion service. Please use the contact details provided in your service agreement.');
     }
   };
 

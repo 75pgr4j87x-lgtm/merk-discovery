@@ -12,6 +12,7 @@ import type { OutboxEntry, StoredSubmission } from './serverEmailAndExcel.js';
 const SUBMISSIONS_COLLECTION = 'studioSubmissions';
 const OUTBOX_COLLECTION = 'emailOutbox';
 const PROJECTS_COLLECTION = 'studioProjects';
+const STUDIO_INVITES_COLLECTION = 'studioInvites';
 const FIRESTORE_BATCH_LIMIT = 450;
 
 export interface ProjectTask {
@@ -55,6 +56,13 @@ export interface StudioProject {
   updatedAt: string;
 }
 
+export interface StudioInvite {
+  email: string;
+  role: 'admin' | 'project_manager' | 'viewer';
+  invitedBy: string;
+  createdAt: string;
+}
+
 let firebaseApp: App | undefined;
 
 export function getFirebaseApp(): App {
@@ -83,6 +91,40 @@ function getOutboxCollection() {
 
 function getProjectsCollection() {
   return getFirestore(getFirebaseApp()).collection(PROJECTS_COLLECTION);
+}
+
+function getStudioInvitesCollection() {
+  return getFirestore(getFirebaseApp()).collection(STUDIO_INVITES_COLLECTION);
+}
+
+export async function hasStudioInvite(email: string): Promise<boolean> {
+  const document = await getStudioInvitesCollection().doc(email.trim().toLowerCase()).get();
+  return document.exists;
+}
+
+export async function loadStudioInvite(email: string): Promise<StudioInvite | null> {
+  const document = await getStudioInvitesCollection().doc(email.trim().toLowerCase()).get();
+  if (!document.exists) return null;
+  const invite = document.data() as StudioInvite;
+  return {
+    ...invite,
+    role: ['admin', 'project_manager', 'viewer'].includes(invite.role) ? invite.role : 'project_manager',
+  };
+}
+
+export async function loadStudioInvites(): Promise<StudioInvite[]> {
+  const snapshot = await getStudioInvitesCollection().get();
+  return snapshot.docs
+    .map((document) => document.data() as StudioInvite)
+    .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
+}
+
+export async function saveStudioInvite(invite: StudioInvite): Promise<void> {
+  await getStudioInvitesCollection().doc(invite.email.trim().toLowerCase()).set(invite);
+}
+
+export async function deleteStudioInvite(email: string): Promise<void> {
+  await getStudioInvitesCollection().doc(email.trim().toLowerCase()).delete();
 }
 
 export async function loadStudioProject(id: string): Promise<StudioProject | null> {

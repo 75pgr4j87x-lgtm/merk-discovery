@@ -11,13 +11,17 @@ import {
 } from './serverEmailAndExcel.js';
 import {
   deleteSubmission,
+  deleteStudioInvite,
   getStudioAuth,
+  loadStudioInvite,
   findProjectByShareTokenHash,
+  loadStudioInvites,
   loadOutbox,
   loadStudioProject,
   loadSubmissions,
   purgeClientDataByEmail,
   saveOutboxEntry,
+  saveStudioInvite,
   saveStudioProject,
   saveSubmission,
   type ProjectComment,
@@ -33,7 +37,7 @@ import {
 dotenv.config();
 
 const app = express();
-const ownerEmail = (process.env.STUDIO_OWNER_EMAIL || 'kelvensarbah@gmail.com').toLowerCase();
+const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
 
   // OWASP Top 10 Security Headers
   app.use((_req, res, next) => {
@@ -46,29 +50,139 @@ const ownerEmail = (process.env.STUDIO_OWNER_EMAIL || 'kelvensarbah@gmail.com').
 
   app.use(express.json({ limit: '5mb' }));
 
-  const requireStudioOwner: express.RequestHandler = async (req, res, next) => {
+  const verifyStudioIdentity = async (req: express.Request, res: express.Response) => {
+    if (!ownerEmail) {
+      res.status(503).json({ error: 'Studio Super Admin is not configured on the server.' });
+      return null;
+    }
     const authorization = req.get('authorization') || '';
     const token = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
     if (!token) {
       res.status(401).json({ error: 'Studio sign-in required.' });
-      return;
+      return null;
     }
-
     try {
       const decodedToken = await getStudioAuth().verifyIdToken(token);
-      if (decodedToken.email?.toLowerCase() !== ownerEmail || !decodedToken.email_verified) {
-        res.status(403).json({ error: 'Studio access is restricted to the owner account.' });
-        return;
+      const email = (decodedToken.email || '').trim().toLowerCase();
+      if (!email || !decodedToken.email_verified) {
+        res.status(403).json({ error: 'A verified Google email is required for Studio access.' });
+        return null;
       }
-      next();
+      const isOwner = Boolean(ownerEmail && email === ownerEmail);
+      const invite = isOwner ? null : await loadStudioInvite(email);
+      return { isOwner, role: isOwner ? 'super_admin' as const : invite?.role || null };
     } catch {
       res.status(401).json({ error: 'Invalid or expired studio sign-in.' });
+      return null;
     }
   };
 
+  const requireStudioAccess: express.RequestHandler = async (req, res, next) => {
+    const identity = await verifyStudioIdentity(req, res);
+    if (!identity) return;
+    if (identity.isOwner || identity.role) {
+      res.locals.studioRole = identity.role;
+      next();
+      return;
+    }
+    res.status(403).json({ error: 'This verified Google account has not been invited to Studio.' });
+  };
+
+  const requireStudioProjectEditor: express.RequestHandler = async (req, res, next) => {
+    const identity = await verifyStudioIdentity(req, res);
+    if (!identity) return;
+    if (identity.isOwner || identity.role === 'admin' || identity.role === 'project_manager') {
+      res.locals.studioRole = identity.role;
+      next();
+      return;
+    }
+    res.status(403).json({ error: 'Your Studio role does not allow project edits.' });
+  };
+
+  const requireStudioAdmin: express.RequestHandler = async (req, res, next) => {
+    const identity = await verifyStudioIdentity(req, res);
+    if (!identity) return;
+    if (identity.isOwner || identity.role === 'admin') {
+      res.locals.studioRole = identity.role;
+      next();
+      return;
+    }
+    res.status(403).json({ error: 'Your Studio role does not allow this action.' });
+  };
+
+  const requireStudioOwnerAccess: express.RequestHandler = async (req, res, next) => {
+    const identity = await verifyStudioIdentity(req, res);
+    if (!identity) return;
+    if (identity.isOwner) {
+      next();
+      return;
+    }
+    res.status(403).json({ error: 'Only the Studio owner can manage invitations.' });
+  };
+
+  app.get('/api/studio/access', async (req, res) => {
+    const identity = await verifyStudioIdentity(req, res);
+    if (!identity) return;
+    return res.json({ allowed: identity.isOwner || Boolean(identity.role), isOwner: identity.isOwner, role: identity.role });
+  });
+
+  app.get('/api/studio/invites', requireStudioOwnerAccess, async (_req, res) => {
+    try {
+      return res.json(await loadStudioInvites());
+    } catch (error) {
+      console.error('Failed to load Studio invites:', error);
+      return res.status(500).json({ error: 'Could not load invitations.' });
+    }
+  });
+
+  app.post('/api/studio/invites', requireStudioOwnerAccess, async (req, res) => {
+    try {
+      const { isValid, email } = sanitizeEmail(req.body?.email);
+      if (!isValid) return res.status(400).json({ error: 'Enter a valid email address.' });
+      if (ownerEmail && email.toLowerCase() === ownerEmail) return res.status(400).json({ error: 'The Super Admin already has Studio access.' });
+      const role = req.body?.role;
+      if (!['admin', 'project_manager', 'viewer'].includes(role)) {
+        return res.status(400).json({ error: 'Choose Admin, Project Manager, or Viewer.' });
+      }
+      const authorization = req.get('authorization') || '';
+      const token = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
+      if (!token) return res.status(401).json({ error: 'Studio sign-in required.' });
+      const decodedToken = await getStudioAuth().verifyIdToken(token);
+      await saveStudioInvite({
+        email: email.toLowerCase(),
+        role,
+        invitedBy: (decodedToken.email || '').toLowerCase(),
+        createdAt: new Date().toISOString(),
+      });
+      return res.status(201).json({ success: true, email: email.toLowerCase() });
+    } catch (error) {
+      console.error('Failed to invite Studio user:', error);
+      return res.status(500).json({ error: 'Could not invite this user.' });
+    }
+  });
+
+  app.delete('/api/studio/invites/:email', requireStudioOwnerAccess, async (req, res) => {
+    try {
+      const { isValid, email } = sanitizeEmail(req.params.email);
+      if (!isValid) return res.status(400).json({ error: 'Invalid email address.' });
+      await deleteStudioInvite(email);
+      return res.json({ success: true, email });
+    } catch (error) {
+      console.error('Failed to revoke Studio invite:', error);
+      return res.status(500).json({ error: 'Could not revoke this invitation.' });
+    }
+  });
+
   const hashShareToken = (token: string) => createHash('sha256').update(token).digest('hex');
-  const ownerProjectResponse = (project: StudioProject) => {
+  const ownerProjectResponse = (project: StudioProject, role?: string) => {
     const { shareTokenHash: _shareTokenHash, ...visibleProject } = project;
+    if (role === 'viewer' || role === 'project_manager') {
+      const { invoiceNumber: _invoiceNumber, invoiceDueDate: _invoiceDueDate, currency: _currency, projectCharge: _projectCharge, discountPercent: _discountPercent, invoiceNotes: _invoiceNotes, ...nonFinancialProject } = visibleProject;
+      return {
+        ...nonFinancialProject,
+        tasks: project.tasks.map(({ amount: _amount, ...task }) => task),
+      };
+    }
     return visibleProject;
   };
 
@@ -181,7 +295,7 @@ const ownerEmail = (process.env.STUDIO_OWNER_EMAIL || 'kelvensarbah@gmail.com').
     });
   }
 
-  app.get('/api/projects/:id', requireStudioOwner, async (req, res) => {
+  app.get('/api/projects/:id', requireStudioAccess, async (req, res) => {
     try {
       const submission = (await loadSubmissions()).find((item) => item.id === req.params.id);
       if (!submission) return res.status(404).json({ error: 'Brief not found.' });
@@ -209,14 +323,14 @@ const ownerEmail = (process.env.STUDIO_OWNER_EMAIL || 'kelvensarbah@gmail.com').
           );
           await saveStudioProject(project);
       }
-      return res.json(ownerProjectResponse(project));
+      return res.json(ownerProjectResponse(project, res.locals.studioRole));
     } catch (error) {
       console.error('Failed to load Studio project:', error);
       return res.status(500).json({ error: 'Failed to load project.' });
     }
   });
 
-  app.put('/api/projects/:id', requireStudioOwner, async (req, res) => {
+  app.put('/api/projects/:id', requireStudioProjectEditor, async (req, res) => {
     try {
       const current = await loadStudioProject(req.params.id);
       if (!current) return res.status(404).json({ error: 'Project not found.' });
@@ -247,33 +361,36 @@ const ownerEmail = (process.env.STUDIO_OWNER_EMAIL || 'kelvensarbah@gmail.com').
         if (!isValidDate(cleanStartDate) || !isValidDate(cleanEndDate)) {
           return res.status(400).json({ error: 'Enter valid project start and end dates.' });
         }
+      const canManageInvoice = res.locals.studioRole === 'super_admin' || res.locals.studioRole === 'admin';
       const charge = Number(projectCharge);
-      const safeCharge = Number.isFinite(charge) ? Math.max(0, charge) : 0;
+      const safeCharge = canManageInvoice
+        ? Number.isFinite(charge) ? Math.max(0, charge) : 0
+        : current.projectCharge;
       const parsedDiscount = Number(discountPercent);
       const project: StudioProject = {
         ...current,
         title: title.trim().slice(0, 120) || current.title,
         columns: cleanColumns,
         tasks: scheduleTaskDueDates(allocateProjectFee(cleanTasks, safeCharge), cleanStartDate, cleanEndDate),
-        invoiceNumber: String(invoiceNumber || '').trim().slice(0, 60),
-        invoiceDueDate: typeof invoiceDueDate === 'string' ? invoiceDueDate.slice(0, 10) : '',
-        currency: ['USD', 'CAD', 'GBP', 'EUR', 'GHS'].includes(currency) ? currency : 'USD',
+        invoiceNumber: canManageInvoice ? String(invoiceNumber || '').trim().slice(0, 60) : current.invoiceNumber,
+        invoiceDueDate: canManageInvoice && typeof invoiceDueDate === 'string' ? invoiceDueDate.slice(0, 10) : current.invoiceDueDate,
+        currency: canManageInvoice && ['USD', 'CAD', 'GBP', 'EUR', 'GHS'].includes(currency) ? currency : current.currency,
         projectCharge: safeCharge,
-        discountPercent: Number.isFinite(parsedDiscount) ? Math.min(100, Math.max(0, parsedDiscount)) : 0,
+        discountPercent: canManageInvoice && Number.isFinite(parsedDiscount) ? Math.min(100, Math.max(0, parsedDiscount)) : current.discountPercent,
         projectStartDate: cleanStartDate,
         projectEndDate: cleanEndDate,
-        invoiceNotes: String(invoiceNotes || '').trim().slice(0, 2000),
+        invoiceNotes: canManageInvoice ? String(invoiceNotes || '').trim().slice(0, 2000) : current.invoiceNotes,
         updatedAt: new Date().toISOString(),
       };
       await saveStudioProject(project);
-      return res.json(ownerProjectResponse(project));
+      return res.json(ownerProjectResponse(project, res.locals.studioRole));
     } catch (error) {
       console.error('Failed to save Studio project:', error);
       return res.status(500).json({ error: 'Failed to save project.' });
     }
   });
 
-  app.post('/api/projects/:id/share', requireStudioOwner, async (req, res) => {
+  app.post('/api/projects/:id/share', requireStudioProjectEditor, async (req, res) => {
     try {
       const project = await loadStudioProject(req.params.id);
       if (!project) return res.status(404).json({ error: 'Project not found.' });
@@ -372,7 +489,7 @@ const ownerEmail = (process.env.STUDIO_OWNER_EMAIL || 'kelvensarbah@gmail.com').
     }
   });
 
-  app.post('/api/projects/:id/comments', requireStudioOwner, async (req, res) => {
+  app.post('/api/projects/:id/comments', requireStudioProjectEditor, async (req, res) => {
     try {
       const project = await loadStudioProject(req.params.id);
       if (!project) return res.status(404).json({ error: 'Project not found.' });
@@ -569,7 +686,7 @@ Format cleanly as a publication-ready document with exactly these 5 numbered sec
 
       if (approved) {
         console.log(`[MERAKIFOS SUBMISSION] Approved Brief received for "${newEntry.companyName}" from ${newEntry.clientName} (${newEntry.clientEmail})!`);
-        // Automatically dispatch a copy of the approved brief to Keven (kelvensarbah@gmail.com)
+        // Automatically dispatch a copy to the private Studio recipient.
         try {
           await sendBriefCopyEmail({ submission: newEntry, recordOutbox: saveOutboxEntry });
         } catch (emailErr) {
@@ -613,7 +730,7 @@ Format cleanly as a publication-ready document with exactly these 5 numbered sec
   });
 
   // Get all submissions for spreadsheet export / review
-  app.get('/api/submissions', requireStudioOwner, async (_req, res) => {
+  app.get('/api/submissions', requireStudioAccess, async (_req, res) => {
     try {
       res.json(await loadSubmissions());
     } catch (err: any) {
@@ -623,7 +740,7 @@ Format cleanly as a publication-ready document with exactly these 5 numbered sec
   });
 
   // Download submissions as a real Microsoft Excel (.xlsx) workbook
-  app.get('/api/submissions/excel', requireStudioOwner, async (_req, res) => {
+  app.get('/api/submissions/excel', requireStudioAccess, async (_req, res) => {
     try {
       const list = await loadSubmissions();
       const buffer = buildSubmissionsExcelWorkbook(list);
@@ -643,7 +760,7 @@ Format cleanly as a publication-ready document with exactly these 5 numbered sec
   });
 
   // Download a single submission as Microsoft Excel (.xlsx)
-  app.get('/api/submissions/:id/excel', requireStudioOwner, async (req, res) => {
+  app.get('/api/submissions/:id/excel', requireStudioAccess, async (req, res) => {
     try {
       const list = await loadSubmissions();
       const sub = list.find((s) => s.id === req.params.id);
@@ -668,7 +785,7 @@ Format cleanly as a publication-ready document with exactly these 5 numbered sec
   });
 
   // Manually dispatch / resend copy of brief to founder or custom recipient
-  app.post('/api/send-brief-copy', requireStudioOwner, async (req, res) => {
+  app.post('/api/send-brief-copy', requireStudioAdmin, async (req, res) => {
     try {
       const { submissionId, recipientEmail, customNote } = req.body;
       const list = await loadSubmissions();
@@ -697,7 +814,7 @@ Format cleanly as a publication-ready document with exactly these 5 numbered sec
   });
 
   // Get email outbox log for studio portal
-  app.get('/api/outbox', requireStudioOwner, async (_req, res) => {
+  app.get('/api/outbox', requireStudioAccess, async (_req, res) => {
     try {
       res.json(await loadOutbox());
     } catch (err: any) {
@@ -707,7 +824,7 @@ Format cleanly as a publication-ready document with exactly these 5 numbered sec
   });
 
   // Delete / archive a submission
-  app.delete('/api/submissions/:id', requireStudioOwner, async (req, res) => {
+  app.delete('/api/submissions/:id', requireStudioAdmin, async (req, res) => {
     try {
       await deleteSubmission(req.params.id);
       const remaining = await loadSubmissions();
@@ -719,7 +836,7 @@ Format cleanly as a publication-ready document with exactly these 5 numbered sec
   });
 
   // Download submissions as CSV (Spreadsheet)
-  app.get('/api/submissions/csv', requireStudioOwner, async (_req, res) => {
+  app.get('/api/submissions/csv', requireStudioAccess, async (_req, res) => {
     try {
       const list = await loadSubmissions();
       const headers = [
