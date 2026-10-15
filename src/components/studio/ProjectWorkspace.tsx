@@ -2,6 +2,7 @@ import React from 'react';
 import { CalendarDays, Check, Clipboard, GripVertical, MessageCircle, Plus, Printer, Save, Trash2, X } from 'lucide-react';
 import { studioFetch } from '../../services/auth';
 import { ProjectJourneyProgress } from '../ProjectJourneyProgress';
+import { soundTrack } from '../../utils/soundtrack';
 
 interface ProjectTask {
   id: string;
@@ -312,7 +313,11 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
           </div>
           <div className="flex items-start gap-3 overflow-x-auto pb-4">
             {project.columns.map((column, columnIndex) => <section key={`${columnIndex}-${column}`} onDragOver={(event) => event.preventDefault()} onDrop={() => {
-              if (draggedTask) patchTask(draggedTask, { status: column });
+              if (draggedTask) {
+                const previousStatus = project.tasks.find((task) => task.id === draggedTask)?.status;
+                if (previousStatus !== column) soundTrack.playSoftSwoosh();
+                patchTask(draggedTask, { status: column });
+              }
               setDraggedTask(null);
             }} id={`studio-stage-${columnIndex}`} className={`merakifos-column min-w-[280px] max-w-[340px] flex-1 border border-[#E5EADF] bg-[#F1F2EC] transition-shadow ${selectedJourneyStage === columnIndex ? 'ring-2 ring-[#D9A441]' : ''}`}>
               <div className="flex items-center gap-1 border-b border-[#D9DED7] bg-white p-2">

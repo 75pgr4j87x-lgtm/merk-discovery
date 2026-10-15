@@ -1,6 +1,7 @@
 import React from 'react';
-import { MessageCircle, MessageSquare, Send, Sparkles } from 'lucide-react';
+import { MessageCircle, MessageSquare, Send, Sparkles, Volume2, VolumeX } from 'lucide-react';
 import { ProjectJourneyProgress } from './ProjectJourneyProgress';
+import { soundTrack } from '../utils/soundtrack';
 
 type TaskPriority = 'Severe' | 'High' | 'Medium' | 'Low';
 
@@ -28,6 +29,14 @@ export const ClientProjectView: React.FC<{ token: string }> = ({ token }) => {
   const [loading, setLoading] = React.useState(true);
   const [sending, setSending] = React.useState(false);
   const [error, setError] = React.useState('');
+  const [effectsMuted, setEffectsMuted] = React.useState(soundTrack.getAreUiEffectsMuted());
+
+  const handleButtonSound = (event: React.MouseEvent<HTMLElement>) => {
+    const target = event.target;
+    if (!(target instanceof Element) || target.closest('[data-sound-control]')) return;
+    const button = target.closest('button');
+    if (button && !button.disabled) soundTrack.playSoftDrop(0.9);
+  };
 
   const loadProject = React.useCallback(async () => {
     setLoading(true);
@@ -71,7 +80,18 @@ export const ClientProjectView: React.FC<{ token: string }> = ({ token }) => {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Could not send comment.');
       setMessage('');
-      await loadProject();
+      setProject((current) => {
+        if (!current) return current;
+        if (taskId) {
+          return {
+            ...current,
+            tasks: current.tasks.map((task) => task.id === taskId
+              ? { ...task, comments: [...task.comments, data.comment] }
+              : task),
+          };
+        }
+        return { ...current, comments: [...current.comments, data.comment] };
+      });
     } catch (sendError) {
       setError(sendError instanceof Error ? sendError.message : 'Could not send comment.');
     } finally {
@@ -83,11 +103,11 @@ export const ClientProjectView: React.FC<{ token: string }> = ({ token }) => {
   if (!project) return <main className="merakifos-ui grid min-h-screen place-items-center bg-[#FAF6F1] px-5 text-center"><div className="rounded-2xl border border-[#E5EADF] bg-white p-8"><div className="mb-2 text-xs uppercase tracking-[0.16em] text-[#7C8B5F]">Merakifos Studio</div><h1 className="text-xl font-semibold">Project link unavailable</h1><p className="mt-2 text-sm text-[#3F4A32]">{error || 'This link may have expired or been replaced.'}</p></div></main>;
 
   return (
-    <main className="merakifos-ui min-h-screen bg-[#FAF6F1] text-[#3F4A32]">
+    <main onClickCapture={handleButtonSound} className="merakifos-ui min-h-screen bg-[#FAF6F1] text-[#3F4A32]">
       <header className="border-b border-[#E5EADF] bg-white px-5 py-7 sm:px-10">
         <div className="mx-auto flex max-w-6xl items-end justify-between gap-4">
           <div><div className="mb-2 text-[10px] uppercase tracking-[0.18em] text-[#7C8B5F]">Merakifos Studio · Client workspace</div><h1 className="text-2xl font-semibold">{project.title}</h1><p className="mt-1 text-sm text-[#3F4A32]">{project.companyName}</p></div>
-          <div className="hidden items-center gap-1.5 text-xs text-[#3F4A32] sm:flex"><Sparkles size={15} className="text-[#D9A441]" /> Project progress</div>
+          <div className="flex items-center gap-2"><div className="hidden items-center gap-1.5 text-xs text-[#3F4A32] sm:flex"><Sparkles size={15} className="text-[#D9A441]" /> Project progress</div><button data-sound-control onClick={() => setEffectsMuted(soundTrack.toggleUiEffectsMuted())} aria-pressed={!effectsMuted} aria-label={effectsMuted ? 'Turn interface sounds on' : 'Turn interface sounds off'} title={effectsMuted ? 'Turn interface sounds on' : 'Turn interface sounds off'} className="border border-[#E5EADF] bg-white p-2 text-[#7C8B5F] hover:bg-[#FAF6F1]">{effectsMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}</button></div>
         </div>
       </header>
       <div className="mx-auto grid max-w-6xl gap-8 px-5 py-8 lg:grid-cols-[1fr_320px] sm:px-10">

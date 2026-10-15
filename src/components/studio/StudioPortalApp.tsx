@@ -36,10 +36,13 @@ import {
   EyeOff,
   Shield,
   KanbanSquare,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 import { exportBriefAsPdf } from '../../utils/pdfGenerator';
 import { cleanBriefDocument } from '../../services/briefGenerator';
 import { ProjectWorkspace } from './ProjectWorkspace';
+import { soundTrack } from '../../utils/soundtrack';
 
 interface StoredSubmission {
   id: string;
@@ -123,6 +126,14 @@ export const StudioPortalApp: React.FC = () => {
   const [isOutboxOpen, setIsOutboxOpen] = React.useState(false);
   const [previewEmail, setPreviewEmail] = React.useState<OutboxEntry | null>(null);
   const [projectWorkspaceId, setProjectWorkspaceId] = React.useState<string | null>(null);
+  const [effectsMuted, setEffectsMuted] = React.useState(soundTrack.getAreUiEffectsMuted());
+
+  const handleButtonSound = (event: React.MouseEvent<HTMLDivElement>) => {
+    const target = event.target;
+    if (!(target instanceof Element) || target.closest('[data-sound-control]')) return;
+    const button = target.closest('button');
+    if (button && !button.disabled) soundTrack.playSoftDrop(0.9);
+  };
 
   // Action status
   const [sendingEmailId, setSendingEmailId] = React.useState<string | null>(null);
@@ -341,7 +352,7 @@ export const StudioPortalApp: React.FC = () => {
   // RENDER: Full Studio OS Application
   // -------------------------------------------------------------
   return (
-    <div className="min-h-screen bg-[#FAF6F1] text-[#3F4A32] font-sans flex flex-col selection:bg-[#7C8B5F]/20 selection:text-[#3F4A32]">
+    <div onClickCapture={handleButtonSound} className="min-h-screen bg-[#FAF6F1] text-[#3F4A32] font-sans flex flex-col selection:bg-[#7C8B5F]/20 selection:text-[#3F4A32]">
       {/* Studio Top Navigation Bar */}
       <header className="sticky top-0 z-30 bg-[#FAF6F1]/90 backdrop-blur-md border-b border-[#E5EADF] px-4 sm:px-8 py-3.5 transition">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
@@ -361,6 +372,9 @@ export const StudioPortalApp: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2.5">
+            <button data-sound-control onClick={() => setEffectsMuted(soundTrack.toggleUiEffectsMuted())} aria-pressed={!effectsMuted} aria-label={effectsMuted ? 'Turn interface sounds on' : 'Turn interface sounds off'} title={effectsMuted ? 'Turn interface sounds on' : 'Turn interface sounds off'} className="p-2 text-[#7C8B5F] hover:bg-white hover:text-[#3F4A32]">
+              {effectsMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+            </button>
             {/* Outbox Badge */}
             <button
               onClick={() => setIsOutboxOpen(true)}
