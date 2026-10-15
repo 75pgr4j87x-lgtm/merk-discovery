@@ -107,8 +107,11 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
     let active = true;
     studioFetch(`/api/projects/${encodeURIComponent(submissionId)}`)
       .then(async (response) => {
-        if (!response.ok) throw new Error('Could not load this project.');
-        const data = await response.json() as StudioProject;
+        const data = await response.json().catch(() => null);
+        if (!response.ok) {
+          throw new Error(data?.error || `Could not load this project (HTTP ${response.status}).`);
+        }
+        if (!data) throw new Error('The project service returned an unreadable response.');
         if (active) setProject(data);
       })
       .catch((error) => setNotice(error.message || 'Could not load this project.'))
