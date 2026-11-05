@@ -74,6 +74,7 @@ interface BetaComment {
 
 interface Tester {
   id: string;
+  projectId?: string;
   displayName: string;
   active: boolean;
 }
@@ -431,11 +432,18 @@ export const TesterPortal: React.FC<{ testerToken: string }> = ({ testerToken })
               <h2 className="mb-4 flex items-center gap-2 text-xl"><Ticket className="h-5 w-5 text-[#7C8B5F]" /> Submit feedback</h2>
               {projects.length === 0 && <p role="status" className="mb-4 rounded-lg bg-[#F2F3ED] p-3 text-xs text-[#69745E]">No beta projects are active. Please contact your beta administrator.</p>}
               <form onSubmit={submitTicket} className="space-y-3.5">
-                <label className="block text-xs font-medium">App / project
-                  <select required value={projectId} onChange={(event) => setProjectId(event.target.value)} className={`${inputClass} mt-1.5`}>
-                    {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-                  </select>
-                </label>
+                {tester.projectId ? (
+                  <div className="rounded-lg bg-[#F2F3ED] px-3 py-2.5 text-xs">
+                    <span className="text-[#76806B]">Project</span>
+                    <div className="mt-1 font-medium">{projects.find((project) => project.id === tester.projectId)?.name || 'Assigned project'}</div>
+                  </div>
+                ) : (
+                  <label className="block text-xs font-medium">App / project
+                    <select required value={projectId} onChange={(event) => setProjectId(event.target.value)} className={`${inputClass} mt-1.5`}>
+                      {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+                    </select>
+                  </label>
+                )}
                 <label className="block text-xs font-medium">Category
                   <select value={form.category} onChange={updateForm('category')} className={`${inputClass} mt-1.5`}>
                     {categories.map((category) => <option key={category}>{category}</option>)}

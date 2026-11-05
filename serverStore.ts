@@ -162,6 +162,7 @@ export interface BetaDeskNotification {
 
 export interface BetaDeskTester {
   id: string;
+  projectId?: string;
   displayName: string;
   active: boolean;
   createdAt: string;
@@ -962,11 +963,12 @@ export async function createBetaDeskTicket(
   });
 }
 
-export async function createBetaDeskTester(tokenHash: string): Promise<BetaDeskTester> {
+export async function createBetaDeskTester(tokenHash: string, projectId: string): Promise<BetaDeskTester> {
   const db = getFirestore(getFirebaseApp());
   const accessRef = getBetaDeskTesterAccessCollection().doc(tokenHash);
   const tester = {
     id: randomUUID(),
+    projectId,
     displayName: '',
     active: true,
     createdAt: new Date().toISOString(),

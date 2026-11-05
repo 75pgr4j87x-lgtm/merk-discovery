@@ -34,6 +34,7 @@ import {
   loadBetaDeskTicket,
   loadBetaDeskTickets,
   loadBetaDeskTicketsForTester,
+  loadBetaDeskTester,
   loadBetaDeskTesterByTokenHash,
   loadBetaDeskTesters,
   loadStudioInvite,
@@ -146,14 +147,23 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
   const verifyBetaDeskIdentity = async (req: express.Request, res: express.Response) => {
     const identity = await verifyStudioIdentity(req, res);
     if (!identity) return null;
-    const betaAdmin = await loadBetaDeskAdmin(identity.email);
     const isStudioAdmin = identity.isOwner || identity.role === 'admin';
+    let isBetaDeskAdmin = false;
+    if (!isStudioAdmin) {
+      try {
+        isBetaDeskAdmin = Boolean((await loadBetaDeskAdmin(identity.email))?.active);
+      } catch (error) {
+        console.error('Failed to verify BetaDesk admin access:', error);
+        res.status(503).json({ error: 'Could not verify BetaDesk access. Refresh the page and try again.' });
+        return null;
+      }
+    }
     return {
       email: identity.email,
       uid: identity.uid,
       isStudioSuperAdmin: identity.isOwner,
       isStudioAdmin,
-      isBetaDeskAdmin: Boolean(betaAdmin?.active),
+      isBetaDeskAdmin,
     };
   };
 
@@ -262,13 +272,21 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     const token = (req.get('authorization') || '').match(/^Bearer\s+([A-Za-z0-9_-]{40,60})$/i)?.[1];
     return token || null;
   };
+  const betaDeskProjectFromRequest = (req: express.Request, res: express.Response) => {
+    const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+    if (!projectId || projectId.length > 80) {
+      res.status(400).json({ error: 'Choose a project to access this BetaDesk feature.' });
+      return null;
+    }
+    return projectId;
+  };
 
   app.get('/api/betadesk/admin/access', async (req, res) => {
     const identity = await verifyBetaDeskIdentity(req, res);
     if (!identity) return;
     return res.json({
-      allowed: identity.isStudioAdmin || identity.isBetaDeskAdmin,
-      canManageAdmins: false,
+      allowed: identity.isStudioSuperAdmin || identity.isStudioAdmin || identity.isBetaDeskAdmin,
+      canManageAdmins: identity.isStudioSuperAdmin,
       email: identity.email,
     });
   });
@@ -335,9 +353,15 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
   });
 
   app.post('/api/betadesk/admin/testers', requireBetaDeskAdmin, async (req, res) => {
+    const projectId = sanitizePlainText(req.body?.projectId, 80);
+    if (!projectId) return res.status(400).json({ error: 'Choose a project for this tester link.' });
     try {
+      const project = await loadBetaDeskProject(projectId);
+      if (!project?.active || project.id === 'legacy') {
+        return res.status(400).json({ error: 'Choose an active project for this tester link.' });
+      }
       const token = randomBytes(32).toString('base64url');
-      const tester = await createBetaDeskTester(hashBetaDeskToken(token));
+      const tester = await createBetaDeskTester(hashBetaDeskToken(token), projectId);
       return res.status(201).json({
         tester,
         shareUrl: betaDeskPublicUrl(req, token),
@@ -348,12 +372,20 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     }
   });
 
-  app.get('/api/betadesk/admin/testers', requireBetaDeskAdmin, async (_req, res) => {
+  app.get('/api/betadesk/admin/testers', requireBetaDeskAdmin, async (req, res) => {
+    const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+    if (!projectId) return res.status(400).json({ error: 'Choose a project to load tester profiles.' });
     try {
+      const project = await loadBetaDeskProject(projectId);
+      if (!project) return res.status(404).json({ error: 'Project not found.' });
       const [testers, tickets] = await Promise.all([loadBetaDeskTesters(), loadBetaDeskTickets()]);
-      return res.json(testers.map((tester) => ({
+      const projectTickets = tickets.filter((ticket) => ticket.projectId === projectId);
+      const projectTesterIds = new Set(projectTickets.map((ticket) => ticket.testerId));
+      return res.json(testers
+        .filter((tester) => tester.projectId === projectId || (!tester.projectId && projectTesterIds.has(tester.id)))
+        .map((tester) => ({
         ...tester,
-        ticketCount: tickets.filter((ticket) => ticket.testerId === tester.id).length,
+        ticketCount: projectTickets.filter((ticket) => ticket.testerId === tester.id).length,
       })));
     } catch (error) {
       console.error('Failed to load BetaDesk testers:', error);
@@ -363,8 +395,21 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
 
   app.post('/api/betadesk/admin/testers/:testerId/revoke', requireBetaDeskAdmin, async (req, res) => {
     const testerId = req.params.testerId;
+    const projectId = betaDeskProjectFromRequest(req, res);
+    if (!projectId) return;
     if (!/^[0-9a-f-]{36}$/i.test(testerId)) return res.status(400).json({ error: 'Invalid tester profile.' });
     try {
+      const tester = await loadBetaDeskTester(testerId);
+      if (!tester) return res.status(404).json({ error: 'Tester profile not found.' });
+      if (tester.projectId && tester.projectId !== projectId) {
+        return res.status(404).json({ error: 'Tester profile not found in this project.' });
+      }
+      if (!tester.projectId) {
+        const tickets = await loadBetaDeskTicketsForTester(testerId);
+        if (!tickets.some((ticket) => ticket.projectId === projectId)) {
+          return res.status(404).json({ error: 'Tester profile not found in this project.' });
+        }
+      }
       const revoked = await revokeBetaDeskTester(testerId);
       if (!revoked) return res.status(404).json({ error: 'Tester profile not found.' });
       return res.json({ success: true });
@@ -396,8 +441,11 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     try {
       const tester = await loadBetaDeskTesterByTokenHash(hashBetaDeskToken(token));
       if (!tester) return res.status(404).json({ error: 'This tester link is invalid or revoked.' });
-      const projects = (await loadBetaDeskProjects())
-        .filter((project) => project.active && project.id !== 'legacy')
+      const allProjects = await loadBetaDeskProjects();
+      const projects = allProjects
+        .filter((project) => project.active && project.id !== 'legacy' && (
+          !tester.projectId || project.id === tester.projectId
+        ))
         .map(({ id, name, description, active, createdAt }) => ({ id, name, description, active, createdAt }));
       return res.json(projects);
     } catch (error) {
@@ -506,6 +554,9 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
       const project = await loadBetaDeskProject(projectId);
       if (!project?.active || project.id === 'legacy') {
         return res.status(400).json({ error: 'Select an active beta-testing project.' });
+      }
+      if (tester.projectId && tester.projectId !== projectId) {
+        return res.status(403).json({ error: 'This tester link is assigned to a different project.' });
       }
       if (!await consumeBetaDeskRateLimit(`tester_${tester.id}`, 10, 60 * 60 * 1000)) {
         return res.status(429).json({ error: 'Too many submissions. Please try again later.' });
@@ -661,10 +712,15 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     }
   });
 
-  app.get('/api/betadesk/admin/tickets', requireBetaDeskAdmin, async (_req, res) => {
+  app.get('/api/betadesk/admin/tickets', requireBetaDeskAdmin, async (req, res) => {
+    const projectId = betaDeskProjectFromRequest(req, res);
+    if (!projectId) return;
     try {
       await loadBetaDeskProjects();
-      return res.json(await loadBetaDeskTickets());
+      const project = await loadBetaDeskProject(projectId);
+      if (!project) return res.status(404).json({ error: 'Project not found.' });
+      const tickets = await loadBetaDeskTickets();
+      return res.json(tickets.filter((ticket) => ticket.projectId === projectId));
     } catch (error) {
       console.error('Failed to load BetaDesk tickets:', error);
       return res.status(500).json({ error: 'Could not load tickets.' });
@@ -673,10 +729,12 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
 
   app.get('/api/betadesk/admin/tickets/:ticketNumber', requireBetaDeskAdmin, async (req, res) => {
     const ticketNumber = req.params.ticketNumber;
+    const projectId = betaDeskProjectFromRequest(req, res);
+    if (!projectId) return;
     if (!/^BETA-\d+$/.test(ticketNumber)) return res.status(400).json({ error: 'Invalid ticket reference.' });
     try {
       const ticket = await loadBetaDeskTicket(ticketNumber);
-      if (!ticket) return res.status(404).json({ error: 'Ticket not found.' });
+      if (!ticket || ticket.projectId !== projectId) return res.status(404).json({ error: 'Ticket not found in this project.' });
       const comments = await loadBetaDeskComments(ticketNumber, true);
       return res.json({ ticket, comments });
     } catch (error) {
@@ -686,6 +744,8 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
   });
 
   app.get('/api/betadesk/admin/tickets/:ticketNumber/attachments/:uploadId', requireBetaDeskAdmin, async (req, res) => {
+    const projectId = betaDeskProjectFromRequest(req, res);
+    if (!projectId) return;
     const range = (req.get('range') || '').match(/^bytes=(\d+)-(\d+)$/);
     if (!range) return res.status(416).json({ error: 'A valid byte range is required.' });
     const start = Number(range[1]);
@@ -695,7 +755,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     }
     try {
       const ticket = await loadBetaDeskTicket(req.params.ticketNumber);
-      if (!ticket || !ticket.attachments?.some((attachment) => attachment.uploadId === req.params.uploadId)) {
+      if (!ticket || ticket.projectId !== projectId || !ticket.attachments?.some((attachment) => attachment.uploadId === req.params.uploadId)) {
         return res.status(404).json({ error: 'Attachment not found.' });
       }
       const attachment = await getBetaDeskAttachmentChunk(ticket.testerId, ticket.ticketNumber, req.params.uploadId, start, end);
@@ -717,7 +777,9 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
 
   app.patch('/api/betadesk/admin/tickets/:ticketNumber', requireBetaDeskAdmin, async (req, res) => {
     const ticketNumber = req.params.ticketNumber;
-    const { status, priority, assignedTo, projectId } = req.body || {};
+    const projectId = betaDeskProjectFromRequest(req, res);
+    if (!projectId) return;
+    const { status, priority, assignedTo } = req.body || {};
     let normalizedAssignee: string | undefined;
     if (typeof assignedTo === 'string' && assignedTo.trim()) {
       const assignee = sanitizeEmail(assignedTo);
@@ -731,8 +793,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
       || (status !== undefined && !betaDeskStatuses.includes(status))
       || (priority !== undefined && !betaDeskPriorities.includes(priority))
       || (assignedTo !== undefined && (typeof assignedTo !== 'string' || assignedTo.length > 254))
-      || (projectId !== undefined && (typeof projectId !== 'string' || !projectId || projectId.length > 80))
-      || (status === undefined && priority === undefined && assignedTo === undefined && projectId === undefined)
+      || (status === undefined && priority === undefined && assignedTo === undefined)
     ) {
       return res.status(400).json({ error: 'Provide valid ticket changes.' });
     }
@@ -747,9 +808,9 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
           return res.status(400).json({ error: 'Tickets can only be assigned to an active BetaDesk administrator.' });
         }
       }
-      if (projectId !== undefined) {
-        const project = await loadBetaDeskProject(projectId);
-        if (!project?.active) return res.status(400).json({ error: 'Choose an active project.' });
+      const existingTicket = await loadBetaDeskTicket(ticketNumber);
+      if (!existingTicket || existingTicket.projectId !== projectId) {
+        return res.status(404).json({ error: 'Ticket not found in this project.' });
       }
       const ticket = await updateBetaDeskTicket(
         ticketNumber,
@@ -757,7 +818,6 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
           ...(status !== undefined ? { status } : {}),
           ...(priority !== undefined ? { priority } : {}),
           ...(normalizedAssignee !== undefined ? { assignedTo: normalizedAssignee } : {}),
-          ...(projectId !== undefined ? { projectId } : {}),
         },
         res.locals.studioEmail || 'Studio admin'
       );
@@ -771,6 +831,8 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
 
   app.post('/api/betadesk/admin/tickets/:ticketNumber/comments', requireBetaDeskAdmin, async (req, res) => {
     const ticketNumber = req.params.ticketNumber;
+    const projectId = betaDeskProjectFromRequest(req, res);
+    if (!projectId) return;
     const message = sanitizePlainText(req.body?.message, 3000);
     const visibility = req.body?.visibility;
     if (!/^BETA-\d+$/.test(ticketNumber) || message.length < 2 || !['public', 'internal'].includes(visibility)) {
@@ -778,7 +840,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     }
     try {
       const ticket = await loadBetaDeskTicket(ticketNumber);
-      if (!ticket) return res.status(404).json({ error: 'Ticket not found.' });
+      if (!ticket || ticket.projectId !== projectId) return res.status(404).json({ error: 'Ticket not found in this project.' });
       const comment = await addBetaDeskComment(ticketNumber, {
         authorType: 'admin',
         authorName: res.locals.studioEmail || 'Studio admin',

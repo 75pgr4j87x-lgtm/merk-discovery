@@ -81,6 +81,7 @@ interface BetaProject {
 
 interface BetaTester {
   id: string;
+  projectId?: string;
   displayName: string;
   active: boolean;
   createdAt: string;
@@ -154,6 +155,7 @@ export const BetaDeskAdmin: React.FC = () => {
   const { theme, toggle: toggleTheme } = useBetaDeskTheme();
   const [user, setUser] = React.useState<User | null>(null);
   const [access, setAccess] = React.useState<'checking' | 'allowed' | 'denied'>('checking');
+  const [accessError, setAccessError] = React.useState('');
   const [tickets, setTickets] = React.useState<BetaTicket[]>([]);
   const [projects, setProjects] = React.useState<BetaProject[]>([]);
   const [testers, setTesters] = React.useState<BetaTester[]>([]);
@@ -176,11 +178,12 @@ export const BetaDeskAdmin: React.FC = () => {
   const [visibility, setVisibility] = React.useState<'public' | 'internal'>('public');
   const [assignedTo, setAssignedTo] = React.useState('');
   const [saving, setSaving] = React.useState(false);
-  const [projectFilter, setProjectFilter] = React.useState('All projects');
+  const [selectedProjectId, setSelectedProjectId] = React.useState('');
   const [newProjectName, setNewProjectName] = React.useState('');
   const [newProjectDescription, setNewProjectDescription] = React.useState('');
   const [creatingProject, setCreatingProject] = React.useState(false);
   const pageSize = 12;
+  const projectDataRequest = React.useRef(0);
 
   React.useEffect(() => {
     if (new URLSearchParams(window.location.search).get('drive') === 'error') {
@@ -188,27 +191,47 @@ export const BetaDeskAdmin: React.FC = () => {
     }
   }, []);
 
-  const loadTickets = React.useCallback(async () => {
+  const loadProjects = React.useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      const response = await studioFetch('/api/betadesk/admin/tickets');
-      if (!response.ok) throw new Error(await responseError(response, 'Could not load tickets.'));
-      const data = await response.json() as BetaTicket[];
-      setTickets(data);
-      setSelectedNumber((current) => current || data[0]?.ticketNumber || '');
-      const [projectsResponse, testersResponse] = await Promise.all([
-        studioFetch('/api/betadesk/admin/projects'),
-        studioFetch('/api/betadesk/admin/testers'),
-      ]);
-      if (!projectsResponse.ok) throw new Error(await responseError(projectsResponse, 'Could not load projects.'));
-      if (!testersResponse.ok) throw new Error(await responseError(testersResponse, 'Could not load tester profiles.'));
-      setProjects(await projectsResponse.json() as BetaProject[]);
-      setTesters(await testersResponse.json() as BetaTester[]);
+      const response = await studioFetch('/api/betadesk/admin/projects');
+      if (!response.ok) throw new Error(await responseError(response, 'Could not load projects.'));
+      setProjects(await response.json() as BetaProject[]);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Could not load tickets.');
+      setError(loadError instanceof Error ? loadError.message : 'Could not load projects.');
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const loadProjectData = React.useCallback(async (projectId: string) => {
+    const requestId = ++projectDataRequest.current;
+    setLoading(true);
+    setError('');
+    const query = `?projectId=${encodeURIComponent(projectId)}`;
+    try {
+      const [ticketsResponse, testersResponse] = await Promise.all([
+        studioFetch(`/api/betadesk/admin/tickets${query}`),
+        studioFetch(`/api/betadesk/admin/testers${query}`),
+      ]);
+      if (!ticketsResponse.ok) throw new Error(await responseError(ticketsResponse, 'Could not load project tickets.'));
+      if (!testersResponse.ok) throw new Error(await responseError(testersResponse, 'Could not load project tester profiles.'));
+      const [ticketData, testerData] = await Promise.all([
+        ticketsResponse.json() as Promise<BetaTicket[]>,
+        testersResponse.json() as Promise<BetaTester[]>,
+      ]);
+      if (requestId !== projectDataRequest.current) return;
+      setTickets(ticketData);
+      setTesters(testerData);
+      setSelectedNumber((current) => ticketData.some((ticket) => ticket.ticketNumber === current)
+        ? current
+        : ticketData[0]?.ticketNumber || '');
+    } catch (loadError) {
+      if (requestId !== projectDataRequest.current) return;
+      setError(loadError instanceof Error ? loadError.message : 'Could not load project data.');
+    } finally {
+      if (requestId === projectDataRequest.current) setLoading(false);
     }
   }, []);
 
@@ -220,8 +243,15 @@ export const BetaDeskAdmin: React.FC = () => {
         try {
           const response = await studioFetch('/api/betadesk/admin/access');
           const data = await response.json();
-          setAccess(response.ok && data.allowed ? 'allowed' : 'denied');
-        } catch {
+          if (!response.ok || !data.allowed) {
+            setAccessError(data.error || 'This Google account does not have BetaDesk access.');
+            setAccess('denied');
+            return;
+          }
+          setAccessError('');
+          setAccess('allowed');
+        } catch (authError) {
+          setAccessError(authError instanceof Error ? authError.message : 'Could not verify BetaDesk access.');
           setAccess('denied');
         }
       })();
@@ -235,8 +265,18 @@ export const BetaDeskAdmin: React.FC = () => {
   }, []);
 
   React.useEffect(() => {
-    if (access === 'allowed') void loadTickets();
-  }, [access, loadTickets]);
+    if (access === 'allowed') void loadProjects();
+  }, [access, loadProjects]);
+
+  React.useEffect(() => {
+    if (access === 'allowed' && selectedProjectId) void loadProjectData(selectedProjectId);
+    if (!selectedProjectId) {
+      setTickets([]);
+      setTesters([]);
+      setSelectedNumber('');
+      setSelectedTicket(null);
+    }
+  }, [access, selectedProjectId, loadProjectData]);
 
   React.useEffect(() => {
     if (!selectedNumber || access !== 'allowed') {
@@ -249,7 +289,7 @@ export const BetaDeskAdmin: React.FC = () => {
       setError('');
       try {
         const response = await studioFetch(
-          `/api/betadesk/admin/tickets/${encodeURIComponent(selectedNumber)}`
+          `/api/betadesk/admin/tickets/${encodeURIComponent(selectedNumber)}?projectId=${encodeURIComponent(selectedProjectId)}`
         );
         if (!response.ok) throw new Error(await responseError(response, 'Could not load ticket details.'));
         const data = await response.json() as { ticket: BetaTicket; comments: BetaComment[] };
@@ -264,7 +304,7 @@ export const BetaDeskAdmin: React.FC = () => {
     return () => {
       active = false;
     };
-  }, [selectedNumber, access]);
+  }, [selectedNumber, selectedProjectId, access]);
 
   const filteredTickets = React.useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -274,15 +314,14 @@ export const BetaDeskAdmin: React.FC = () => {
         || ticket.subject.toLowerCase().includes(query)
         || ticket.submitterName.toLowerCase().includes(query);
       return matchesSearch
-        && (projectFilter === 'All projects' || ticket.projectId === projectFilter)
         && (statusFilter === 'All statuses' || ticket.status === statusFilter)
         && (categoryFilter === 'All categories' || ticket.category === categoryFilter)
         && (priorityFilter === 'All priorities' || ticket.priority === priorityFilter)
         && (platformFilter === 'All platforms' || ticket.platform === platformFilter);
     });
-  }, [tickets, search, projectFilter, statusFilter, categoryFilter, priorityFilter, platformFilter]);
+  }, [tickets, search, statusFilter, categoryFilter, priorityFilter, platformFilter]);
 
-  React.useEffect(() => setPage(0), [search, projectFilter, statusFilter, categoryFilter, priorityFilter, platformFilter]);
+  React.useEffect(() => setPage(0), [search, statusFilter, categoryFilter, priorityFilter, platformFilter]);
 
   const updateTicket = async (changes: Partial<Pick<BetaTicket, 'status' | 'priority' | 'assignedTo' | 'projectId'>>) => {
     if (!selectedTicket) return;
@@ -290,7 +329,7 @@ export const BetaDeskAdmin: React.FC = () => {
     setError('');
     try {
       const response = await studioFetch(
-        `/api/betadesk/admin/tickets/${encodeURIComponent(selectedTicket.ticketNumber)}`,
+        `/api/betadesk/admin/tickets/${encodeURIComponent(selectedTicket.ticketNumber)}?projectId=${encodeURIComponent(selectedProjectId)}`,
         {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
@@ -316,7 +355,7 @@ export const BetaDeskAdmin: React.FC = () => {
     setError('');
     try {
       const response = await studioFetch(
-        `/api/betadesk/admin/tickets/${encodeURIComponent(selectedTicket.ticketNumber)}/comments`,
+        `/api/betadesk/admin/tickets/${encodeURIComponent(selectedTicket.ticketNumber)}/comments?projectId=${encodeURIComponent(selectedProjectId)}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -326,7 +365,7 @@ export const BetaDeskAdmin: React.FC = () => {
       if (!response.ok) throw new Error(await responseError(response, 'Could not add comment.'));
       setReply('');
       const detailsResponse = await studioFetch(
-        `/api/betadesk/admin/tickets/${encodeURIComponent(selectedTicket.ticketNumber)}`
+        `/api/betadesk/admin/tickets/${encodeURIComponent(selectedTicket.ticketNumber)}?projectId=${encodeURIComponent(selectedProjectId)}`
       );
       if (!detailsResponse.ok) throw new Error(await responseError(detailsResponse, 'Comment saved but could not reload ticket.'));
       const data = await detailsResponse.json() as { ticket: BetaTicket; comments: BetaComment[] };
@@ -346,7 +385,7 @@ export const BetaDeskAdmin: React.FC = () => {
     setError('');
     try {
       const response = await studioFetch(
-        `/api/betadesk/admin/testers/${encodeURIComponent(selectedTicket.testerId)}/revoke`,
+        `/api/betadesk/admin/testers/${encodeURIComponent(selectedTicket.testerId)}/revoke?projectId=${encodeURIComponent(selectedProjectId)}`,
         { method: 'POST' }
       );
       if (!response.ok) throw new Error(await responseError(response, 'Could not revoke access links.'));
@@ -362,7 +401,11 @@ export const BetaDeskAdmin: React.FC = () => {
     setCreatingTester(true);
     setTesterError('');
     try {
-      const response = await studioFetch('/api/betadesk/admin/testers', { method: 'POST' });
+      const response = await studioFetch('/api/betadesk/admin/testers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: selectedProjectId }),
+      });
       if (!response.ok) throw new Error(await responseError(response, 'Could not create tester link.'));
       const data = await response.json() as { tester: BetaTester; shareUrl: string };
       setNewTesterUrl(data.shareUrl);
@@ -387,7 +430,7 @@ export const BetaDeskAdmin: React.FC = () => {
       if (!response.ok) throw new Error(await responseError(response, 'Could not create project.'));
       const project = await response.json() as BetaProject;
       setProjects((current) => [...current, project]);
-      setProjectFilter(project.id);
+      setSelectedProjectId(project.id);
       setNewProjectName('');
       setNewProjectDescription('');
     } catch (createError) {
@@ -395,6 +438,16 @@ export const BetaDeskAdmin: React.FC = () => {
     } finally {
       setCreatingProject(false);
     }
+  };
+
+  const selectProject = (projectId: string) => {
+    projectDataRequest.current += 1;
+    setLoading(false);
+    setSelectedNumber('');
+    setSelectedTicket(null);
+    setSelectedProjectId(projectId);
+    setNewTesterUrl('');
+    setTesterError('');
   };
 
   const openAttachment = async (ticket: BetaTicket, attachment: BetaAttachment) => {
@@ -411,7 +464,7 @@ export const BetaDeskAdmin: React.FC = () => {
       for (let start = 0; start < attachment.size; start += chunkSize) {
         const end = Math.min(start + chunkSize, attachment.size) - 1;
         const response = await studioFetch(
-          `/api/betadesk/admin/tickets/${encodeURIComponent(ticket.ticketNumber)}/attachments/${encodeURIComponent(attachment.uploadId)}`,
+          `/api/betadesk/admin/tickets/${encodeURIComponent(ticket.ticketNumber)}/attachments/${encodeURIComponent(attachment.uploadId)}?projectId=${encodeURIComponent(selectedProjectId)}`,
           { headers: { Range: `bytes=${start}-${end}` } }
         );
         if (!response.ok) throw new Error(await responseError(response, 'Could not access attachment.'));
@@ -449,7 +502,7 @@ export const BetaDeskAdmin: React.FC = () => {
   };
 
   const moveTicket = async (ticketNumber: string, status: TicketStatus) => {
-    const response = await studioFetch(`/api/betadesk/admin/tickets/${encodeURIComponent(ticketNumber)}`, {
+    const response = await studioFetch(`/api/betadesk/admin/tickets/${encodeURIComponent(ticketNumber)}?projectId=${encodeURIComponent(selectedProjectId)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status }),
@@ -463,12 +516,7 @@ export const BetaDeskAdmin: React.FC = () => {
     if (selectedTicket?.ticketNumber === updated.ticketNumber) setSelectedTicket(updated);
   };
 
-  const projectTickets = React.useMemo(
-    () => projectFilter === 'All projects'
-      ? tickets
-      : tickets.filter((ticket) => ticket.projectId === projectFilter),
-    [tickets, projectFilter]
-  );
+  const projectTickets = tickets;
   const avgResolutionHours = React.useMemo(() => {
     const resolved = projectTickets.filter((ticket) => ticket.resolvedAt);
     if (!resolved.length) return '—';
@@ -498,7 +546,7 @@ export const BetaDeskAdmin: React.FC = () => {
         <div className="mx-auto mt-20 max-w-md rounded-2xl border border-rose-200 bg-white p-8 text-center">
           <LockKeyhole className="mx-auto mb-4 h-9 w-9 text-rose-600" />
           <h1 className="text-2xl">Admin access required</h1>
-          <p className="my-4 text-sm text-[#76806B]">Sign in with the Studio Super Admin, a Studio Admin, or a BetaDesk-only administrator. Manage BetaDesk access and storage from Studio access settings.</p>
+          <p className="my-4 text-sm text-[#76806B]">{accessError || 'This signed-in account does not currently have BetaDesk access. The Studio Super Admin can manage BetaDesk-only roles in Studio access settings.'}</p>
           <a href="/studio" className={`${primaryButton} mt-2`}>Return to Studio</a>
           <GoogleSignInButton user={user} onAuthChange={setUser} />
         </div>
@@ -525,19 +573,61 @@ export const BetaDeskAdmin: React.FC = () => {
     { label: 'Avg. resolution', value: avgResolutionHours, icon: BarChart3 },
   ];
 
+  const selectedProject = projects.find((project) => project.id === selectedProjectId && project.active);
+  if (access === 'allowed' && (!selectedProjectId || !selectedProject)) {
+    return (
+      <BetaDeskShell theme={theme} onToggleTheme={toggleTheme} onClickCapture={handleButtonSound}>
+        <main className="mx-auto min-h-[calc(100vh-58px)] w-full max-w-5xl px-4 py-8 sm:px-7">
+          <header className="mb-7 flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <a href="/studio" className="mb-3 inline-flex items-center gap-1 text-xs text-[#7C8B5F] hover:underline">
+                <ArrowLeft className="h-3.5 w-3.5" /> Studio
+              </a>
+              <h1 className="text-3xl">BetaDesk projects</h1>
+              <p className="mt-1 text-sm text-[#76806B]">Choose a project to manage its testers, feedback, and tickets.</p>
+            </div>
+            <GoogleSignInButton user={user} onAuthChange={setUser} />
+          </header>
+          {error && <div role="alert" className="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</div>}
+          {loading && projects.length === 0 && <p role="status" className="mb-4 text-sm text-[#76806B]">Loading projects…</p>}
+          <section className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {projects.filter((project) => project.active).map((project) => (
+              <button key={project.id} type="button" onClick={() => selectProject(project.id)} className="min-w-0 rounded-xl border border-[#E5EADF] bg-white p-5 text-left shadow-sm transition hover:border-[#7C8B5F] hover:shadow-md">
+                <span className="mb-3 inline-flex rounded-lg bg-[#F2F3ED] p-2 text-[#7C8B5F]"><FolderPlus className="h-5 w-5" /></span>
+                <h2 className="break-words text-lg font-medium">{project.name}</h2>
+                <p className="mt-1 line-clamp-2 min-h-8 text-xs text-[#76806B]">{project.description || (project.id === 'legacy' ? 'Existing BetaDesk tickets from before project organization.' : 'Beta feedback project')}</p>
+                {project.id === 'legacy' && <span className="mt-3 inline-block rounded-full bg-[#F2F3ED] px-2.5 py-1 text-[10px] text-[#69745E]">Existing tickets</span>}
+              </button>
+            ))}
+          </section>
+          <section className="rounded-xl border border-[#E5EADF] bg-white p-4 sm:p-5">
+            <h2 className="flex items-center gap-2 text-lg"><FolderPlus className="h-4 w-4 text-[#7C8B5F]" /> Create a project</h2>
+            <p className="mt-1 text-xs text-[#76806B]">Each project has its own tester links, feedback, metrics, and ticket workflow.</p>
+            <form onSubmit={createProject} className="mt-4 flex flex-col gap-2 sm:flex-row">
+              <input required minLength={2} maxLength={100} value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder="App / project name" className={inputClass} />
+              <input maxLength={500} value={newProjectDescription} onChange={(event) => setNewProjectDescription(event.target.value)} placeholder="Optional description" className={inputClass} />
+              <button type="submit" className={`${primaryButton} shrink-0`} disabled={creatingProject}>{creatingProject ? 'Creating…' : 'Create project'}</button>
+            </form>
+          </section>
+        </main>
+      </BetaDeskShell>
+    );
+  }
+  if (!selectedProject) return null;
+
   return (
     <BetaDeskShell theme={theme} onToggleTheme={toggleTheme} onClickCapture={handleButtonSound}>
       <div className="mx-auto max-w-[1500px] px-4 py-7 sm:px-7">
         <header className="mb-7 flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <a href="/studio" className="mb-3 inline-flex items-center gap-1 text-xs text-[#7C8B5F] hover:underline">
-              <ArrowLeft className="h-3.5 w-3.5" /> Studio
-            </a>
-            <h1 className="text-3xl">BetaDesk</h1>
-            <p className="mt-1 text-sm text-[#76806B]">Beta feedback and ticket management</p>
+          <div className="min-w-0">
+            <button type="button" onClick={() => selectProject('')} className="mb-3 inline-flex items-center gap-1 text-xs text-[#7C8B5F] hover:underline">
+              <ArrowLeft className="h-3.5 w-3.5" /> All projects
+            </button>
+            <h1 className="break-words text-3xl">{selectedProject.name}</h1>
+            <p className="mt-1 text-sm text-[#76806B]">Project feedback, testers, and ticket management</p>
           </div>
           <div className="flex items-center gap-2">
-            <button type="button" className={selectClass} onClick={() => void loadTickets()}>
+            <button type="button" className={selectClass} onClick={() => void loadProjectData(selectedProjectId)}>
               <RefreshCw className="inline h-4 w-4" /> Refresh
             </button>
             <GoogleSignInButton user={user} onAuthChange={setUser} />
@@ -546,32 +636,17 @@ export const BetaDeskAdmin: React.FC = () => {
 
         {error && <div role="alert" className="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</div>}
 
-        <div className="mb-6 grid items-start gap-4">
-          <section className="rounded-xl border border-[#E5EADF] bg-white p-4 sm:p-5">
-            <h2 className="flex items-center gap-2 text-lg"><FolderPlus className="h-4 w-4 text-[#7C8B5F]" /> Beta projects</h2>
-            <p className="mt-1 text-xs text-[#76806B]">Keep feedback for each app separate. Older tickets are grouped under the legacy project.</p>
-            <p className="mt-1 text-xs text-[#76806B]">Manage admin access and Google Drive storage from <a href="/studio" className="font-medium text-[#7C8B5F] underline">Studio access settings</a>.</p>
-            <form onSubmit={createProject} className="mt-3 flex flex-col gap-2 sm:flex-row">
-              <input required minLength={2} maxLength={100} value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder="New app / project name" className={inputClass} />
-              <input maxLength={500} value={newProjectDescription} onChange={(event) => setNewProjectDescription(event.target.value)} placeholder="Optional description" className={inputClass} />
-              <button type="submit" className={primaryButton} disabled={creatingProject}>{creatingProject ? 'Creating…' : 'Create'}</button>
-            </form>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {projects.map((project) => <span key={project.id} className="rounded-full bg-[#F2F3ED] px-3 py-1 text-xs">{project.name}{project.id === 'legacy' ? ' · existing tickets' : ''}</span>)}
-            </div>
-          </section>
-        </div>
-
         <section className="mb-6 rounded-xl border border-[#E5EADF] bg-white p-4 sm:p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="text-lg">Tester profiles</h2>
-              <p className="mt-1 text-xs text-[#76806B]">Create one private feedback link per client. Their name is saved once; no email or account is required.</p>
+              <p className="mt-1 text-xs text-[#76806B]">Create a private feedback link for {selectedProject.name}. Each link and its tickets stay in this project.</p>
             </div>
-            <button type="button" className={primaryButton} disabled={creatingTester} onClick={() => void createTesterLink()}>
+            <button type="button" className={primaryButton} disabled={creatingTester || selectedProject.id === 'legacy'} onClick={() => void createTesterLink()}>
               <Ticket className="h-4 w-4" /> {creatingTester ? 'Creating…' : 'Create tester link'}
             </button>
           </div>
+          {selectedProject.id === 'legacy' && <p className="mt-3 text-xs text-[#76806B]">This project contains historic tickets. Create a new project to invite testers for new feedback.</p>}
           {newTesterUrl && (
             <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
               <label className="mb-2 block text-xs font-medium text-emerald-900">New private tester link — copy and send it to the client</label>
@@ -639,9 +714,6 @@ export const BetaDeskAdmin: React.FC = () => {
               </div>
             </div>
             <div className="grid gap-2 border-b border-[#E5EADF] p-3 sm:grid-cols-2 xl:grid-cols-3">
-              <select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)} className={selectClass}>
-                <option>All projects</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-              </select>
               <label className="relative sm:col-span-2 xl:col-span-1">
                 <Search className="absolute left-3 top-2.5 h-4 w-4 text-[#9AA18E]" />
                 <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search ID, subject, reporter" className={`${inputClass} pl-9`} />
@@ -746,12 +818,9 @@ export const BetaDeskAdmin: React.FC = () => {
                     <select className={selectClass} value={selectedTicket.priority} disabled={saving} onChange={(event) => void updateTicket({ priority: event.target.value as TicketPriority })}>
                       {priorities.map((priority) => <option key={priority}>{priority}</option>)}
                     </select>
-                    <select className={selectClass} value={selectedTicket.projectId} disabled={saving} aria-label="Ticket project" onChange={(event) => void updateTicket({ projectId: event.target.value })}>
-                      {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-                    </select>
                   </div>
                   <div className="grid grid-cols-2 gap-3 text-xs">
-                    <div className="col-span-2"><div className="text-[#8A9380]">Project</div><div className="mt-1">{projects.find((project) => project.id === selectedTicket.projectId)?.name || 'Legacy / Unassigned Tickets'}</div></div>
+                    <div className="col-span-2"><div className="text-[#8A9380]">Project</div><div className="mt-1">{selectedProject.name}</div></div>
                     <div><div className="text-[#8A9380]">Category</div><div className="mt-1">{selectedTicket.category}</div></div>
                     <div><div className="text-[#8A9380]">Platform</div><div className="mt-1">{selectedTicket.platform || '—'}</div></div>
                     <div><div className="text-[#8A9380]">Reporter profile</div><div className="mt-1">{selectedTicket.submitterName}</div></div>
