@@ -7,6 +7,7 @@ import {
   buildSubmissionsExcelWorkbook,
   buildSingleClientExcel,
   sendBetaDeskEmail,
+  sendAdminInvitationEmail,
   sendBriefCopyEmail,
   DEFAULT_FOUNDER_EMAIL,
 } from './serverEmailAndExcel.js';
@@ -237,6 +238,12 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
       throw new Error('PUBLIC_APP_URL must use HTTPS.');
     }
     return url;
+  };
+  const studioAccessUrl = (req: express.Request, path: string) => {
+    const branchUrl = process.env.VERCEL_ENV === 'preview' && process.env.VERCEL_BRANCH_URL
+      ? `https://${process.env.VERCEL_BRANCH_URL}`
+      : null;
+    return new URL(path, branchUrl || betaDeskAppBaseUrl(req)).toString();
   };
   const betaDeskPublicUrl = (req: express.Request, token: string) => {
     const url = betaDeskAppBaseUrl(req);
@@ -907,8 +914,24 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
       if (email === ownerEmail) {
         return res.status(400).json({ error: 'The Studio Super Admin already has BetaDesk access.' });
       }
-      await saveBetaDeskAdmin(email, res.locals.studioEmail || 'Studio owner');
-      return res.status(201).json({ email, active: true });
+      const invitedBy = res.locals.studioEmail || 'Studio owner';
+      await saveBetaDeskAdmin(email, invitedBy);
+      try {
+        const { messageId } = await sendAdminInvitationEmail({
+          recipient: email,
+          role: 'BetaDesk Admin',
+          invitedBy,
+          accessUrl: studioAccessUrl(req, '/studio/beta-feedback'),
+        });
+        return res.status(201).json({ email, active: true, emailSent: true, messageId });
+      } catch (error) {
+        console.error('BetaDesk admin access was granted, but invitation email failed:', error);
+        return res.status(502).json({
+          error: 'BetaDesk admin access was granted, but the invitation email could not be sent. Check the server SMTP settings and retry.',
+          accessGranted: true,
+          email,
+        });
+      }
     } catch (error) {
       console.error('Failed to grant Studio BetaDesk role:', error);
       return res.status(500).json({ error: 'Could not grant BetaDesk admin access.' });
@@ -958,7 +981,28 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
         invitedBy: (decodedToken.email || '').toLowerCase(),
         createdAt: new Date().toISOString(),
       });
-      return res.status(201).json({ success: true, email: email.toLowerCase() });
+      const invitedBy = (decodedToken.email || '').toLowerCase();
+      const roleName = role === 'admin'
+        ? 'Studio Admin'
+        : role === 'project_manager'
+          ? 'Studio Project Manager'
+          : 'Studio Viewer';
+      try {
+        const { messageId } = await sendAdminInvitationEmail({
+          recipient: email.toLowerCase(),
+          role: roleName,
+          invitedBy,
+          accessUrl: studioAccessUrl(req, '/studio'),
+        });
+        return res.status(201).json({ success: true, email: email.toLowerCase(), emailSent: true, messageId });
+      } catch (error) {
+        console.error('Studio invite was saved, but invitation email failed:', error);
+        return res.status(502).json({
+          error: 'Studio access was granted, but the invitation email could not be sent. Check the server SMTP settings and retry.',
+          inviteCreated: true,
+          email: email.toLowerCase(),
+        });
+      }
     } catch (error) {
       console.error('Failed to invite Studio user:', error);
       return res.status(500).json({ error: 'Could not invite this user.' });

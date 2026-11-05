@@ -163,9 +163,11 @@ export const StudioPortalApp: React.FC = () => {
   const [inviteEmail, setInviteEmail] = React.useState('');
   const [inviteRole, setInviteRole] = React.useState<StudioInvite['role']>('project_manager');
   const [inviteError, setInviteError] = React.useState('');
+  const [inviteNotice, setInviteNotice] = React.useState('');
   const [savingInvite, setSavingInvite] = React.useState(false);
   const [betaDeskRoleEmail, setBetaDeskRoleEmail] = React.useState('');
   const [betaDeskRoleError, setBetaDeskRoleError] = React.useState('');
+  const [betaDeskRoleNotice, setBetaDeskRoleNotice] = React.useState('');
   const [savingBetaDeskRole, setSavingBetaDeskRole] = React.useState(false);
   const [connectingBetaDeskDrive, setConnectingBetaDeskDrive] = React.useState(false);
   const [betaDeskDriveNotice, setBetaDeskDriveNotice] = React.useState('');
@@ -295,6 +297,8 @@ export const StudioPortalApp: React.FC = () => {
     event.preventDefault();
     setSavingInvite(true);
     setInviteError('');
+    setInviteNotice('');
+    const invitedEmail = inviteEmail.trim();
     try {
       const response = await studioFetch('/api/studio/invites', {
         method: 'POST',
@@ -302,9 +306,16 @@ export const StudioPortalApp: React.FC = () => {
         body: JSON.stringify({ email: inviteEmail, role: inviteRole }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Could not invite this user.');
+      if (!response.ok) {
+        if (data.inviteCreated) {
+          const invitesRes = await studioFetch('/api/studio/invites');
+          if (invitesRes.ok) setStudioInvites(await invitesRes.json());
+        }
+        throw new Error(data.error || 'Could not invite this user.');
+      }
       setInviteEmail('');
       setInviteRole('project_manager');
+      setInviteNotice(data.emailSent ? `Invitation email sent to ${invitedEmail}.` : '');
       const invitesRes = await studioFetch('/api/studio/invites');
       if (invitesRes.ok) setStudioInvites(await invitesRes.json());
     } catch (error) {
@@ -330,6 +341,8 @@ export const StudioPortalApp: React.FC = () => {
     event.preventDefault();
     setSavingBetaDeskRole(true);
     setBetaDeskRoleError('');
+    setBetaDeskRoleNotice('');
+    const invitedEmail = betaDeskRoleEmail.trim();
     try {
       const response = await studioFetch('/api/studio/betadesk/admins', {
         method: 'POST',
@@ -337,8 +350,18 @@ export const StudioPortalApp: React.FC = () => {
         body: JSON.stringify({ email: betaDeskRoleEmail }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Could not grant BetaDesk admin access.');
+      if (!response.ok) {
+        if (data.accessGranted) {
+          const rolesResponse = await studioFetch('/api/studio/betadesk/admins');
+          if (rolesResponse.ok) {
+            const roles = await rolesResponse.json() as BetaDeskRoleData;
+            setBetaDeskAdmins(roles.admins);
+          }
+        }
+        throw new Error(data.error || 'Could not grant BetaDesk admin access.');
+      }
       setBetaDeskRoleEmail('');
+      setBetaDeskRoleNotice(data.emailSent ? `Invitation email sent to ${invitedEmail}.` : '');
       const rolesResponse = await studioFetch('/api/studio/betadesk/admins');
       if (!rolesResponse.ok) throw new Error('Role was added, but the updated role list could not be loaded.');
       const roles = await rolesResponse.json() as BetaDeskRoleData;
@@ -1293,6 +1316,7 @@ export const StudioPortalApp: React.FC = () => {
               <button disabled={savingInvite} className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#3F4A32] px-4 py-2.5 text-sm text-[#FAF6F1] disabled:opacity-50"><Key size={15} className="text-[#D9A441]" />{savingInvite ? 'Inviting...' : 'Invite user'}</button>
             </form>
             {inviteError && <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{inviteError}</p>}
+            {inviteNotice && <p role="status" className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{inviteNotice}</p>}
             <h3 className="mb-2 text-sm font-semibold">Invited users ({studioInvites.length})</h3>
             {studioInvites.length ? <ul className="max-h-64 divide-y divide-[#E5EADF] overflow-y-auto rounded-xl border border-[#E5EADF] px-3">
               {studioInvites.map((invite) => <li key={invite.email} className="flex flex-wrap items-center justify-between gap-2 py-3">
@@ -1313,6 +1337,7 @@ export const StudioPortalApp: React.FC = () => {
                 </button>
               </form>
               {betaDeskRoleError && <p role="alert" className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{betaDeskRoleError}</p>}
+              {betaDeskRoleNotice && <p role="status" className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{betaDeskRoleNotice}</p>}
               {betaDeskAdmins.length ? (
                 <ul className="max-h-48 divide-y divide-[#E5EADF] overflow-y-auto rounded-xl border border-[#E5EADF] px-3">
                   {betaDeskAdmins.map((admin) => (
