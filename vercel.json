@@ -6,6 +6,14 @@
   "outputDirectory": "public",
   "rewrites": [
     {
+      "source": "/api/betadesk/:path*",
+      "destination": "/api/betadesk?__betadesk_path=:path*"
+    },
+    {
+      "source": "/api/studio/betadesk/:path*",
+      "destination": "/api/studio?__studio_path=betadesk/:path*"
+    },
+    {
       "source": "/studio",
       "destination": "/"
     },
