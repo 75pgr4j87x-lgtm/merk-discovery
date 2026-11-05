@@ -242,7 +242,12 @@ export const BetaDeskAdmin: React.FC = () => {
       void (async () => {
         try {
           const response = await studioFetch('/api/betadesk/admin/access');
-          const data = await response.json();
+          const data = await response.json().catch(() => null) as { allowed?: boolean; error?: string } | null;
+          if (!data) {
+            throw new Error(
+              `BetaDesk API returned a non-JSON response (HTTP ${response.status}). This deployment may be missing its BetaDesk API function.`
+            );
+          }
           if (!response.ok || !data.allowed) {
             setAccessError(data.error || 'This Google account does not have BetaDesk access.');
             setAccess('denied');
