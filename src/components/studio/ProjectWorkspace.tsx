@@ -278,7 +278,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
           <div className="text-[10px] uppercase tracking-[0.16em] text-[#6F786F]">Studio project</div>
           <h1 className="truncate text-lg font-semibold">{project.title}</h1>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex max-w-full flex-wrap items-center justify-end gap-2">
           <button onClick={createShareLink} className="inline-flex items-center gap-2 border border-[#E5EADF] bg-white px-3 py-2 text-xs text-[#3F4A32] hover:bg-[#FAF6F1]"><Clipboard size={15} /> Share with client</button>
           {canEdit && <button onClick={createShareLink} className="inline-flex items-center gap-2 border border-[#E5EADF] bg-white px-3 py-2 text-xs text-[#3F4A32] hover:bg-[#FAF6F1]"><Clipboard size={15} /> Share with client</button>}
           {canEdit && <button onClick={saveProject} disabled={!dirty || saving} className="inline-flex items-center gap-2 bg-[#3F4A32] px-3 py-2 text-xs text-[#FAF6F1] disabled:opacity-40"><Save size={15} /> {saving ? 'Saving' : dirty ? 'Save changes' : 'Saved'}</button>}
@@ -288,7 +288,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({ submissionId
       <main className="mx-auto max-w-[1500px] px-4 py-5 sm:px-8">
         {notice && <div className="workspace-no-print mb-4 flex justify-between border border-[#D9DED7] bg-white px-3 py-2 text-xs"><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Dismiss"><X size={14} /></button></div>}
         {shareLink && <div className="workspace-no-print mb-4 break-all border-l-2 border-[#788F68] bg-white px-3 py-2 text-xs">{shareLink}</div>}
-        <div className="workspace-no-print mb-5 flex border-b border-[#D9DED7]">
+        <div className="workspace-no-print mb-5 flex overflow-x-auto border-b border-[#D9DED7]">
           <button onClick={() => setActiveTab('board')} className={`border-b-2 px-4 py-2 text-sm ${activeTab === 'board' ? 'border-[#25312B] font-semibold' : 'border-transparent text-[#6F786F]'}`}>Workflow board</button>
           <button onClick={() => setActiveTab('comments')} className={`border-b-2 px-4 py-2 text-sm ${activeTab === 'comments' ? 'border-[#25312B] font-semibold' : 'border-transparent text-[#6F786F]'}`}>Comments ({project.comments.length})</button>
           {canManageInvoice && <button onClick={() => setActiveTab('invoice')} className={`border-b-2 px-4 py-2 text-sm ${activeTab === 'invoice' ? 'border-[#25312B] font-semibold' : 'border-transparent text-[#6F786F]'}`}>Invoice</button>}

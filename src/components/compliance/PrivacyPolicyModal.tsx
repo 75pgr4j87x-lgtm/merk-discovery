@@ -28,7 +28,7 @@ export const PrivacyPolicyModal: React.FC<PrivacyPolicyModalProps> = ({ isOpen, 
                 Privacy Notice & Data Protection Policy
               </h2>
               <p className="text-[11px] text-[#4A5736] font-body font-light">
-                GDPR (EU/UK) & CCPA/CPRA (California) Compliance Framework
+                How we handle client and administrator information
               </p>
             </div>
           </div>
@@ -74,6 +74,7 @@ export const PrivacyPolicyModal: React.FC<PrivacyPolicyModalProps> = ({ isOpen, 
               <li><strong>Contact Identifiers:</strong> Client name and professional email address.</li>
               <li><strong>Brand & Business Parameters:</strong> Company name, existing domain status, industry objectives, target audience, and aesthetic preferences.</li>
               <li><strong>Project Parameters:</strong> Preferred launch timeline, investment bracket, and palette selections.</li>
+              <li><strong>Administrator Access:</strong> Verified Google account email, assigned role, inviter, and invite status for Studio and BetaDesk administrators.</li>
             </ul>
             <p className="mt-2 text-[#4A5736]">
               We do <strong>not</strong> collect or process sensitive categories of personal data (e.g. biometric data, medical information, racial or ethnic origin, or credit card numbers) through this discovery flow.
@@ -91,6 +92,7 @@ export const PrivacyPolicyModal: React.FC<PrivacyPolicyModalProps> = ({ isOpen, 
             <ul className="list-disc pl-5 space-y-1 text-[#4B5563] mt-1">
               <li><strong>Contract Preparation (Art. 6(1)(b)):</strong> Processing is necessary to formulate preliminary project briefs, timelines, and commercial estimates at your explicit request prior to entering into a formal agreement.</li>
               <li><strong>Consent (Art. 6(1)(a)):</strong> When you opt-in to save drafts in your browser or receive digital copies of your approved brief via email.</li>
+              <li><strong>Legitimate Interests (where applicable):</strong> Managing and securing access for invited Studio and BetaDesk administrators.</li>
             </ul>
           </section>
 
@@ -101,6 +103,9 @@ export const PrivacyPolicyModal: React.FC<PrivacyPolicyModalProps> = ({ isOpen, 
             </h3>
             <p>
               Intake submissions are retained only for the duration of active project discovery and collaboration (up to 12 months for commercial records). You retain the absolute legal right to request the complete deletion of your records (&quot;Right to Erasure&quot; / CCPA Deletion Request) at any time through our automated in-app deletion tool or by emailing us.
+            </p>
+            <p className="mt-2">
+              Administrator access records are retained while access remains active or until revoked. Unclaimed shareable administrator invitations expire after seven days; they can be revoked earlier by the Studio Super Admin.
             </p>
           </section>
 
@@ -128,7 +133,7 @@ export const PrivacyPolicyModal: React.FC<PrivacyPolicyModalProps> = ({ isOpen, 
         {/* Footer */}
         <div className="px-6 py-4 bg-[#FAF6F1] border-t border-[#E5EADF] flex justify-between items-center">
           <span className="text-[11px] text-[#4A5736] font-body">
-            Official Merakifos Compliance Document
+            Merakifos Privacy Notice
           </span>
           <button
             onClick={onClose}

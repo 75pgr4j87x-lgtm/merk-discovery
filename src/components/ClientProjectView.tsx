@@ -123,13 +123,13 @@ export const ClientProjectView: React.FC<{ token: string }> = ({ token }) => {
 
   return (
     <main onClickCapture={handleButtonSound} className="merakifos-ui min-h-screen bg-[#FAF6F1] text-[#3F4A32]">
-      <header className="border-b border-[#E5EADF] bg-white px-5 py-7 sm:px-10">
-        <div className="mx-auto flex max-w-6xl items-end justify-between gap-4">
-          <div><div className="mb-2 text-[10px] uppercase tracking-[0.18em] text-[#7C8B5F]">Merakifos Studio · Client workspace</div><h1 className="text-2xl font-semibold">{project.title}</h1><p className="mt-1 text-sm text-[#3F4A32]">{project.companyName}</p></div>
-          <div className="flex items-center gap-2"><div className="hidden items-center gap-1.5 text-xs text-[#3F4A32] sm:flex"><Sparkles size={15} className="text-[#D9A441]" /> Project progress</div><button data-sound-control onClick={() => setEffectsMuted(soundTrack.toggleUiEffectsMuted())} aria-pressed={!effectsMuted} aria-label={effectsMuted ? 'Turn interface sounds on' : 'Turn interface sounds off'} title={effectsMuted ? 'Turn interface sounds on' : 'Turn interface sounds off'} className="border border-[#E5EADF] bg-white p-2 text-[#7C8B5F] hover:bg-[#FAF6F1]">{effectsMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}</button></div>
+      <header className="border-b border-[#E5EADF] bg-white px-4 py-5 sm:px-10 sm:py-7">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-end justify-between gap-4">
+          <div className="min-w-0"><div className="mb-2 text-[10px] uppercase tracking-[0.18em] text-[#7C8B5F]">Merakifos Studio · Client workspace</div><h1 className="break-words text-2xl font-semibold">{project.title}</h1><p className="mt-1 text-sm text-[#3F4A32]">{project.companyName}</p></div>
+          <div className="ml-auto flex items-center gap-2"><div className="hidden items-center gap-1.5 text-xs text-[#3F4A32] sm:flex"><Sparkles size={15} className="text-[#D9A441]" /> Project progress</div><button data-sound-control onClick={() => setEffectsMuted(soundTrack.toggleUiEffectsMuted())} aria-pressed={!effectsMuted} aria-label={effectsMuted ? 'Turn interface sounds on' : 'Turn interface sounds off'} title={effectsMuted ? 'Turn interface sounds on' : 'Turn interface sounds off'} className="border border-[#E5EADF] bg-white p-2 text-[#7C8B5F] hover:bg-[#FAF6F1]">{effectsMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}</button></div>
         </div>
       </header>
-      <div className="mx-auto grid max-w-6xl gap-8 px-5 py-8 lg:grid-cols-[1fr_320px] sm:px-10">
+      <div className="mx-auto grid max-w-6xl gap-8 px-4 py-6 sm:px-10 sm:py-8 lg:grid-cols-[minmax(0,1fr)_320px]">
         <section>
           <div className="mb-4 flex items-end justify-between"><div><h2 className="text-base font-semibold">Workflow</h2><p className="mt-1 text-xs text-[#3F4A32]">Current milestones and target dates</p></div><button onClick={loadProject} className="border border-[#E5EADF] bg-white px-3 py-2 text-xs text-[#3F4A32] hover:bg-[#F1F2EC]">Refresh</button></div>
           <div className="mb-5">

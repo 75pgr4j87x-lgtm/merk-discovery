@@ -25,9 +25,14 @@ export const GoogleSignInButton: React.FC<GoogleSignInButtonProps> = ({
       if (res?.user) {
         onAuthChange(res.user);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Sign in failed:', err);
-      setErrorMsg(err.message || 'Failed to sign in with Google');
+      const errorCode = typeof err === 'object' && err !== null && 'code' in err && typeof err.code === 'string'
+        ? err.code
+        : '';
+      setErrorMsg(errorCode === 'auth/unauthorized-domain'
+        ? 'unauthorized-domain'
+        : err instanceof Error ? err.message : 'Failed to sign in with Google');
     } finally {
       setSigningIn(false);
     }
@@ -116,9 +121,24 @@ export const GoogleSignInButton: React.FC<GoogleSignInButtonProps> = ({
         </div>
       </button>
       {errorMsg && (
-        <span className="text-[11px] text-rose-500 mt-1 max-w-[200px] text-right truncate">
-          {errorMsg}
-        </span>
+        errorMsg === 'unauthorized-domain' ? (
+          <div role="alert" className="mt-2 max-w-[280px] text-left text-[11px] leading-relaxed text-rose-600">
+            <p>This domain is not enabled for Firebase sign-in:</p>
+            <code className="block break-all font-mono">{window.location.hostname}</code>
+            <a
+              href="https://console.firebase.google.com/project/gen-lang-client-0961556565/authentication/settings"
+              target="_blank"
+              rel="noreferrer"
+              className="mt-1 inline-block underline"
+            >
+              Add it under Authentication &gt; Settings &gt; Authorized domains.
+            </a>
+          </div>
+        ) : (
+          <span role="alert" className="mt-1 max-w-[280px] whitespace-normal break-words text-left text-[11px] text-rose-500">
+            {errorMsg}
+          </span>
+        )
       )}
     </div>
   );

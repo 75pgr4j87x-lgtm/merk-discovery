@@ -38,6 +38,9 @@ import {
   KanbanSquare,
   Volume2,
   VolumeX,
+  Ticket,
+  Moon,
+  Sun,
 } from 'lucide-react';
 import { exportBriefAsPdf } from '../../utils/pdfGenerator';
 import { cleanBriefDocument } from '../../services/briefGenerator';
@@ -100,6 +103,28 @@ interface StudioInvite {
   createdAt: string;
 }
 
+interface AdminInviteLink {
+  id: string;
+  email: string;
+  kind: 'studio' | 'betadesk';
+  role: 'admin' | 'project_manager' | 'viewer' | 'betadesk_admin';
+  createdAt: string;
+  expiresAt: string;
+}
+
+interface BetaDeskAdminRole {
+  email: string;
+  active: boolean;
+  invitedBy: string;
+  createdAt: string;
+}
+
+interface BetaDeskRoleData {
+  admins: BetaDeskAdminRole[];
+  superAdminEmail: string;
+  driveConnected: boolean;
+}
+
 const roleLabel: Record<StudioInvite['role'], string> = {
   admin: 'Admin',
   project_manager: 'Project Manager',
@@ -130,6 +155,10 @@ export const StudioPortalApp: React.FC = () => {
   const [submissions, setSubmissions] = React.useState<StoredSubmission[]>([]);
   const [outbox, setOutbox] = React.useState<OutboxEntry[]>([]);
   const [studioInvites, setStudioInvites] = React.useState<StudioInvite[]>([]);
+  const [adminInviteLinks, setAdminInviteLinks] = React.useState<AdminInviteLink[]>([]);
+  const [betaDeskAdmins, setBetaDeskAdmins] = React.useState<BetaDeskAdminRole[]>([]);
+  const [betaDeskSuperAdminEmail, setBetaDeskSuperAdminEmail] = React.useState('');
+  const [betaDeskDriveConnected, setBetaDeskDriveConnected] = React.useState(false);
   const [isLoading, setIsLoading] = React.useState(false);
   const [searchTerm, setSearchTerm] = React.useState('');
   const [statusFilter, setStatusFilter] = React.useState<'all' | 'approved' | 'pending'>('all');
@@ -143,9 +172,37 @@ export const StudioPortalApp: React.FC = () => {
   const [isInviteManagerOpen, setIsInviteManagerOpen] = React.useState(false);
   const [inviteEmail, setInviteEmail] = React.useState('');
   const [inviteRole, setInviteRole] = React.useState<StudioInvite['role']>('project_manager');
+  const [inviteDelivery, setInviteDelivery] = React.useState<'email' | 'link'>('email');
   const [inviteError, setInviteError] = React.useState('');
+  const [inviteNotice, setInviteNotice] = React.useState('');
+  const [studioInviteLink, setStudioInviteLink] = React.useState('');
   const [savingInvite, setSavingInvite] = React.useState(false);
+  const [betaDeskRoleEmail, setBetaDeskRoleEmail] = React.useState('');
+  const [betaDeskRoleError, setBetaDeskRoleError] = React.useState('');
+  const [betaDeskRoleNotice, setBetaDeskRoleNotice] = React.useState('');
+  const [betaDeskInviteDelivery, setBetaDeskInviteDelivery] = React.useState<'email' | 'link'>('email');
+  const [betaDeskInviteLink, setBetaDeskInviteLink] = React.useState('');
+  const [savingBetaDeskRole, setSavingBetaDeskRole] = React.useState(false);
+  const [connectingBetaDeskDrive, setConnectingBetaDeskDrive] = React.useState(false);
+  const [betaDeskDriveNotice, setBetaDeskDriveNotice] = React.useState('');
+  const [studioTheme, setStudioTheme] = React.useState<'light' | 'dark'>(
+    () => window.localStorage.getItem('studio-theme') === 'dark' ? 'dark' : 'light'
+  );
   const [effectsMuted, setEffectsMuted] = React.useState(soundTrack.getAreUiEffectsMuted());
+
+  React.useEffect(() => {
+    window.localStorage.setItem('studio-theme', studioTheme);
+  }, [studioTheme]);
+
+  React.useEffect(() => {
+    const driveStatus = new URLSearchParams(window.location.search).get('drive');
+    if (!driveStatus) return;
+    setIsInviteManagerOpen(true);
+    setBetaDeskDriveNotice(driveStatus === 'connected'
+      ? 'Google Drive is connected to the Studio Super Admin account.'
+      : 'Google Drive could not be connected. Check the OAuth setup and try again.');
+    window.history.replaceState({}, '', `${window.location.pathname}${window.location.hash}`);
+  }, []);
 
   const handleButtonSound = (event: React.MouseEvent<HTMLDivElement>) => {
     const target = event.target;
@@ -221,8 +278,23 @@ export const StudioPortalApp: React.FC = () => {
         setOutbox(outboxData);
       }
       if (isStudioOwner) {
-        const invitesRes = await studioFetch('/api/studio/invites');
+        const [invitesRes, betaDeskAdminsRes, inviteLinksRes] = await Promise.all([
+          studioFetch('/api/studio/invites'),
+          studioFetch('/api/studio/betadesk/admins'),
+          studioFetch('/api/studio/invite-links'),
+        ]);
         if (invitesRes.ok) setStudioInvites(await invitesRes.json());
+        if (inviteLinksRes.ok) setAdminInviteLinks(await inviteLinksRes.json());
+        if (betaDeskAdminsRes.ok) {
+          const data = await betaDeskAdminsRes.json() as BetaDeskRoleData;
+          setBetaDeskAdmins(data.admins);
+          setBetaDeskSuperAdminEmail(data.superAdminEmail);
+          setBetaDeskDriveConnected(data.driveConnected);
+          setBetaDeskRoleError('');
+        } else {
+          const data = await betaDeskAdminsRes.json().catch(() => ({}));
+          setBetaDeskRoleError(data.error || 'Could not load BetaDesk roles.');
+        }
       }
     } catch (e) {
       console.error('Failed to load studio data:', e);
@@ -241,7 +313,25 @@ export const StudioPortalApp: React.FC = () => {
     event.preventDefault();
     setSavingInvite(true);
     setInviteError('');
+    setInviteNotice('');
+    const invitedEmail = inviteEmail.trim();
     try {
+      if (inviteDelivery === 'link') {
+        const response = await studioFetch('/api/studio/invite-links', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: invitedEmail, kind: 'studio', role: inviteRole }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Could not create an invite link.');
+        setStudioInviteLink(data.inviteUrl);
+        setInviteEmail('');
+        setInviteNotice(`Share this one-use link only with ${invitedEmail}. It expires in 7 days.`);
+        const linksRes = await studioFetch('/api/studio/invite-links');
+        if (linksRes.ok) setAdminInviteLinks(await linksRes.json());
+        return;
+      }
+
       const response = await studioFetch('/api/studio/invites', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -251,6 +341,8 @@ export const StudioPortalApp: React.FC = () => {
       if (!response.ok) throw new Error(data.error || 'Could not invite this user.');
       setInviteEmail('');
       setInviteRole('project_manager');
+      setStudioInviteLink('');
+      setInviteNotice(data.emailSent ? `Invitation email sent to ${invitedEmail}.` : '');
       const invitesRes = await studioFetch('/api/studio/invites');
       if (invitesRes.ok) setStudioInvites(await invitesRes.json());
     } catch (error) {
@@ -269,6 +361,92 @@ export const StudioPortalApp: React.FC = () => {
       setStudioInvites((current) => current.filter((invite) => invite.email !== email));
     } catch (error) {
       setInviteError(error instanceof Error ? error.message : 'Could not revoke this invitation.');
+    }
+  };
+
+  const handleRevokeAdminInviteLink = async (id: string) => {
+    try {
+      const response = await studioFetch(`/api/studio/invite-links/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not revoke this invite link.');
+      setAdminInviteLinks((current) => current.filter((link) => link.id !== id));
+      setStudioInviteLink('');
+      setBetaDeskInviteLink('');
+    } catch (error) {
+      setInviteError(error instanceof Error ? error.message : 'Could not revoke this invite link.');
+    }
+  };
+
+  const handleAddBetaDeskAdmin = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSavingBetaDeskRole(true);
+    setBetaDeskRoleError('');
+    setBetaDeskRoleNotice('');
+    const invitedEmail = betaDeskRoleEmail.trim();
+    try {
+      if (betaDeskInviteDelivery === 'link') {
+        const response = await studioFetch('/api/studio/invite-links', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: invitedEmail, kind: 'betadesk', role: 'betadesk_admin' }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Could not create an invite link.');
+        setBetaDeskInviteLink(data.inviteUrl);
+        setBetaDeskRoleEmail('');
+        setBetaDeskRoleNotice(`Share this one-use link only with ${invitedEmail}. It expires in 7 days.`);
+        const linksRes = await studioFetch('/api/studio/invite-links');
+        if (linksRes.ok) setAdminInviteLinks(await linksRes.json());
+        return;
+      }
+
+      const response = await studioFetch('/api/studio/betadesk/admins', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: betaDeskRoleEmail }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not grant BetaDesk admin access.');
+      setBetaDeskRoleEmail('');
+      setBetaDeskInviteLink('');
+      setBetaDeskRoleNotice(data.emailSent ? `Invitation email sent to ${invitedEmail}.` : '');
+      const rolesResponse = await studioFetch('/api/studio/betadesk/admins');
+      if (!rolesResponse.ok) throw new Error('Role was added, but the updated role list could not be loaded.');
+      const roles = await rolesResponse.json() as BetaDeskRoleData;
+      setBetaDeskAdmins(roles.admins);
+      setBetaDeskSuperAdminEmail(roles.superAdminEmail);
+      setBetaDeskDriveConnected(roles.driveConnected);
+    } catch (error) {
+      setBetaDeskRoleError(error instanceof Error ? error.message : 'Could not grant BetaDesk admin access.');
+    } finally {
+      setSavingBetaDeskRole(false);
+    }
+  };
+
+  const handleRemoveBetaDeskAdmin = async (email: string) => {
+    if (!window.confirm(`Remove BetaDesk admin access for ${email}? Studio access will not change.`)) return;
+    setBetaDeskRoleError('');
+    try {
+      const response = await studioFetch(`/api/studio/betadesk/admins/${encodeURIComponent(email)}`, { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not remove BetaDesk admin access.');
+      setBetaDeskAdmins((current) => current.filter((admin) => admin.email !== email));
+    } catch (error) {
+      setBetaDeskRoleError(error instanceof Error ? error.message : 'Could not remove BetaDesk admin access.');
+    }
+  };
+
+  const handleConnectBetaDeskDrive = async () => {
+    setConnectingBetaDeskDrive(true);
+    setBetaDeskDriveNotice('');
+    try {
+      const response = await studioFetch('/api/betadesk/admin/drive/connect', { method: 'POST' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not connect Google Drive.');
+      window.location.assign(data.authorizationUrl);
+    } catch (error) {
+      setBetaDeskDriveNotice(error instanceof Error ? error.message : 'Could not connect Google Drive.');
+      setConnectingBetaDeskDrive(false);
     }
   };
 
@@ -377,8 +555,11 @@ export const StudioPortalApp: React.FC = () => {
   // -------------------------------------------------------------
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen bg-[#FAF6F1] flex flex-col justify-center items-center px-4 font-sans text-[#3F4A32]">
+      <div className="studio-theme min-h-screen bg-[#FAF6F1] flex flex-col justify-center items-center px-4 font-sans text-[#3F4A32]" data-theme={studioTheme}>
         <div className="max-w-md w-full bg-white border border-[#E5EADF] rounded-3xl p-8 sm:p-10 shadow-xl text-center relative overflow-hidden">
+          <button type="button" onClick={() => setStudioTheme((current) => current === 'dark' ? 'light' : 'dark')} aria-label={`Switch to ${studioTheme === 'dark' ? 'light' : 'dark'} theme`} className="absolute right-4 top-4 rounded-lg border border-[#E5EADF] bg-white p-2 text-[#7C8B5F]">
+            {studioTheme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          </button>
           <div className="absolute -right-12 -top-12 w-36 h-36 rounded-full bg-[#7C8B5F]/10 blur-2xl pointer-events-none" />
           <div className="absolute -left-12 -bottom-12 w-36 h-36 rounded-full bg-[#D9A441]/15 blur-2xl pointer-events-none" />
 
@@ -427,10 +608,10 @@ export const StudioPortalApp: React.FC = () => {
   // RENDER: Full Studio OS Application
   // -------------------------------------------------------------
   return (
-    <div onClickCapture={handleButtonSound} className="min-h-screen bg-[#FAF6F1] text-[#3F4A32] font-sans flex flex-col selection:bg-[#7C8B5F]/20 selection:text-[#3F4A32]">
+    <div onClickCapture={handleButtonSound} className="studio-theme min-h-screen bg-[#FAF6F1] text-[#3F4A32] font-sans flex flex-col selection:bg-[#7C8B5F]/20 selection:text-[#3F4A32]" data-theme={studioTheme}>
       {/* Studio Top Navigation Bar */}
       <header className="sticky top-0 z-30 bg-[#FAF6F1]/90 backdrop-blur-md border-b border-[#E5EADF] px-4 sm:px-8 py-3.5 transition">
-        <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
+        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
               <span className="font-heading font-normal text-xs tracking-[0.25em] uppercase text-[#3F4A32]">
@@ -446,12 +627,20 @@ export const StudioPortalApp: React.FC = () => {
             </span>
           </div>
 
-          <div className="flex items-center gap-2.5">
-            {isStudioOwner && <button onClick={() => setIsInviteManagerOpen(true)} className="inline-flex items-center gap-2 rounded-full border border-[#E5EADF] bg-white px-3 py-1.5 text-xs text-[#3F4A32] hover:border-[#7C8B5F]">
+          <div className="flex max-w-full flex-wrap items-center justify-end gap-2.5">
+            {(isStudioOwner || accessRole === 'admin') && (
+              <a href="/studio/beta-feedback" className="inline-flex items-center gap-2 rounded-full border border-[#E5EADF] bg-white px-3 py-1.5 text-xs text-[#3F4A32] hover:border-[#7C8B5F]">
+                <Ticket className="h-3.5 w-3.5 text-[#7C8B5F]" /><span>BetaDesk</span>
+              </a>
+            )}
+            {isStudioOwner && <button onClick={() => setIsInviteManagerOpen(true)} aria-label="Studio access" title="Studio access" className="inline-flex items-center gap-2 rounded-full border border-[#E5EADF] bg-white px-3 py-1.5 text-xs text-[#3F4A32] hover:border-[#7C8B5F]">
               <Key className="h-3.5 w-3.5 text-[#7C8B5F]" /><span className="hidden sm:inline">Studio access</span>
             </button>}
             <button data-sound-control onClick={() => setEffectsMuted(soundTrack.toggleUiEffectsMuted())} aria-pressed={!effectsMuted} aria-label={effectsMuted ? 'Turn interface sounds on' : 'Turn interface sounds off'} title={effectsMuted ? 'Turn interface sounds on' : 'Turn interface sounds off'} className="p-2 text-[#7C8B5F] hover:bg-white hover:text-[#3F4A32]">
               {effectsMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+            </button>
+            <button type="button" data-sound-control onClick={() => setStudioTheme((current) => current === 'dark' ? 'light' : 'dark')} aria-label={`Switch to ${studioTheme === 'dark' ? 'light' : 'dark'} theme`} title={`Switch to ${studioTheme === 'dark' ? 'light' : 'dark'} theme`} className="rounded-full border border-[#E5EADF] bg-white p-2 text-[#7C8B5F] hover:text-[#3F4A32]">
+              {studioTheme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </button>
             {/* Outbox Badge */}
             <button
@@ -1042,13 +1231,13 @@ export const StudioPortalApp: React.FC = () => {
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto my-4 border border-[#E5EADF] rounded-2xl">
+            <div className="flex-1 overflow-auto my-4 border border-[#E5EADF] rounded-2xl">
               {outbox.length === 0 ? (
                 <div className="py-16 text-center text-xs text-[#7C8B5F] font-body font-light">
                   No copies of briefs dispatched yet. Whenever a client approves a brief, a copy is automatically recorded here.
                 </div>
               ) : (
-                <table className="w-full text-left text-xs border-collapse font-body font-light">
+                <table className="w-full min-w-[700px] text-left text-xs border-collapse font-body font-light">
                   <thead className="bg-[#FAF6F1] border-b border-[#E5EADF] text-[#7C8B5F] uppercase tracking-wider text-[10px]">
                     <tr>
                       <th className="p-3">Dispatched At</th>
@@ -1159,22 +1348,31 @@ export const StudioPortalApp: React.FC = () => {
       )}
       {isInviteManagerOpen && isStudioOwner && (
         <div className="fixed inset-0 z-[70] grid place-items-center bg-black/40 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setIsInviteManagerOpen(false); }}>
-          <section role="dialog" aria-modal="true" aria-labelledby="studio-access-title" className="w-full max-w-xl rounded-2xl border border-[#E5EADF] bg-white p-5 shadow-xl">
+          <section role="dialog" aria-modal="true" aria-labelledby="studio-access-title" className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-[#E5EADF] bg-white p-5 shadow-xl">
             <div className="mb-4 flex items-start justify-between gap-3 border-b border-[#E5EADF] pb-3">
               <div><p className="text-xs uppercase tracking-wider text-[#7C8B5F]">Owner settings</p><h2 id="studio-access-title" className="mt-1 text-lg font-semibold">Studio access</h2></div>
               <button onClick={() => setIsInviteManagerOpen(false)} aria-label="Close Studio access" className="p-2 text-[#7C8B5F]"><X size={17} /></button>
             </div>
-            <p className="mb-4 text-sm text-[#59645B]">Invitees sign in with Google using the exact email below. They must have a verified Google email. Revoking access takes effect on their next API request.</p>
+            <p className="mb-4 text-sm text-[#59645B]">Studio Admins have full operational access to BetaDesk. Only the Studio Super Admin can change BetaDesk admin grants or connect the Super Admin’s Google Drive. BetaDesk-only access can also be granted below without changing a person’s Studio role. Invitees must sign in with the invited, verified Google account. Shareable links are tied to the entered email, can be used once, expire after 7 days, and can be revoked here.</p>
             <form onSubmit={handleInviteUser} className="mb-5 flex flex-col gap-2 sm:flex-row">
               <input type="email" required value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="colleague@example.com" className="min-w-0 flex-1 rounded-xl border border-[#E5EADF] px-3 py-2.5 text-sm" aria-label="Email address to invite" />
+              <select value={inviteDelivery} onChange={(event) => setInviteDelivery(event.target.value as 'email' | 'link')} aria-label="Invitation delivery method" className="rounded-xl border border-[#E5EADF] bg-white px-3 py-2.5 text-sm">
+                <option value="email">Email invite</option>
+                <option value="link">Create shareable link</option>
+              </select>
               <select value={inviteRole} onChange={(event) => setInviteRole(event.target.value as StudioInvite['role'])} aria-label="Role for invited user" className="rounded-xl border border-[#E5EADF] bg-white px-3 py-2.5 text-sm">
                 <option value="admin">Admin</option>
                 <option value="project_manager">Project Manager</option>
                 <option value="viewer">Viewer</option>
               </select>
-              <button disabled={savingInvite} className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#3F4A32] px-4 py-2.5 text-sm text-[#FAF6F1] disabled:opacity-50"><Key size={15} className="text-[#D9A441]" />{savingInvite ? 'Inviting...' : 'Invite user'}</button>
+              <button disabled={savingInvite} className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#3F4A32] px-4 py-2.5 text-sm text-[#FAF6F1] disabled:opacity-50"><Key size={15} className="text-[#D9A441]" />{savingInvite ? 'Creating...' : inviteDelivery === 'link' ? 'Create link' : 'Invite user'}</button>
             </form>
             {inviteError && <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{inviteError}</p>}
+            {inviteNotice && <p role="status" className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{inviteNotice}</p>}
+            {studioInviteLink && <div className="mb-4 flex flex-col gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 sm:flex-row">
+              <input readOnly value={studioInviteLink} aria-label="Generated Studio invite link" className="min-w-0 flex-1 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-xs text-[#3F4A32]" />
+              <button type="button" onClick={() => void navigator.clipboard.writeText(studioInviteLink).then(() => setInviteNotice('Studio invite link copied.')).catch(() => setInviteError('Could not copy the invite link; copy it from the field above.'))} className="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-300 px-3 py-2 text-xs text-emerald-900"><Copy size={14} />Copy link</button>
+            </div>}
             <h3 className="mb-2 text-sm font-semibold">Invited users ({studioInvites.length})</h3>
             {studioInvites.length ? <ul className="max-h-64 divide-y divide-[#E5EADF] overflow-y-auto rounded-xl border border-[#E5EADF] px-3">
               {studioInvites.map((invite) => <li key={invite.email} className="flex flex-wrap items-center justify-between gap-2 py-3">
@@ -1182,6 +1380,69 @@ export const StudioPortalApp: React.FC = () => {
                 <button onClick={() => handleRevokeInvite(invite.email)} className="rounded-xl border border-[#E5EADF] px-3 py-1.5 text-xs text-[#7A3D35] hover:bg-red-50">Revoke</button>
               </li>)}
             </ul> : <p className="rounded-xl border border-dashed border-[#CDD4CC] px-4 py-7 text-center text-sm text-[#7C8B5F]">No invited users yet.</p>}
+
+            <h3 className="mb-2 mt-5 text-sm font-semibold">Pending shareable links ({adminInviteLinks.length})</h3>
+            {adminInviteLinks.length ? <ul className="max-h-56 divide-y divide-[#E5EADF] overflow-y-auto rounded-xl border border-[#E5EADF] px-3">
+              {adminInviteLinks.map((link) => <li key={link.id} className="flex flex-wrap items-center justify-between gap-2 py-3">
+                <div className="min-w-0">
+                  <div className="break-all text-sm text-[#3F4A32]">{link.email}</div>
+                  <div className="text-xs text-[#7C8B5F]">{link.role === 'betadesk_admin' ? 'BetaDesk Admin' : roleLabel[link.role]} · Expires {new Date(link.expiresAt).toLocaleString()}</div>
+                </div>
+                <button type="button" onClick={() => void handleRevokeAdminInviteLink(link.id)} className="rounded-xl border border-[#E5EADF] px-3 py-1.5 text-xs text-[#7A3D35] hover:bg-red-50">Revoke link</button>
+              </li>)}
+            </ul> : <p className="rounded-xl border border-dashed border-[#CDD4CC] px-4 py-5 text-center text-sm text-[#7C8B5F]">No pending shareable links.</p>}
+
+            <div className="mt-6 border-t border-[#E5EADF] pt-5">
+              <h3 className="text-sm font-semibold">BetaDesk admin roles</h3>
+              <p className="mb-3 mt-1 text-xs text-[#7C8B5F]">
+                The Studio Super Admin controls BetaDesk roles. Studio Admins automatically have full operational access to BetaDesk. BetaDesk-only access does not change Studio roles.
+              </p>
+              <form onSubmit={handleAddBetaDeskAdmin} className="mb-4 flex flex-col gap-2 sm:flex-row">
+                <input type="email" required value={betaDeskRoleEmail} onChange={(event) => setBetaDeskRoleEmail(event.target.value)} placeholder="Google account email" className="min-w-0 flex-1 rounded-xl border border-[#E5EADF] px-3 py-2.5 text-sm" aria-label="Google account email for BetaDesk admin" />
+                <select value={betaDeskInviteDelivery} onChange={(event) => setBetaDeskInviteDelivery(event.target.value as 'email' | 'link')} aria-label="BetaDesk invitation delivery method" className="rounded-xl border border-[#E5EADF] bg-white px-3 py-2.5 text-sm">
+                  <option value="email">Email invite</option>
+                  <option value="link">Create shareable link</option>
+                </select>
+                <button disabled={savingBetaDeskRole} className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#3F4A32] px-4 py-2.5 text-sm text-[#FAF6F1] disabled:opacity-50">
+                  <Ticket size={15} className="text-[#D9A441]" />{savingBetaDeskRole ? 'Creating…' : betaDeskInviteDelivery === 'link' ? 'Create link' : 'Add BetaDesk admin'}
+                </button>
+              </form>
+              {betaDeskRoleError && <p role="alert" className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{betaDeskRoleError}</p>}
+              {betaDeskRoleNotice && <p role="status" className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{betaDeskRoleNotice}</p>}
+              {betaDeskInviteLink && <div className="mb-4 flex flex-col gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 sm:flex-row">
+                <input readOnly value={betaDeskInviteLink} aria-label="Generated BetaDesk invite link" className="min-w-0 flex-1 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-xs text-[#3F4A32]" />
+                <button type="button" onClick={() => void navigator.clipboard.writeText(betaDeskInviteLink).then(() => setBetaDeskRoleNotice('BetaDesk invite link copied.')).catch(() => setBetaDeskRoleError('Could not copy the invite link; copy it from the field above.'))} className="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-300 px-3 py-2 text-xs text-emerald-900"><Copy size={14} />Copy link</button>
+              </div>}
+              {betaDeskAdmins.length ? (
+                <ul className="max-h-48 divide-y divide-[#E5EADF] overflow-y-auto rounded-xl border border-[#E5EADF] px-3">
+                  {betaDeskAdmins.map((admin) => (
+                    <li key={admin.email} className="flex flex-wrap items-center justify-between gap-2 py-3">
+                      <div className="min-w-0">
+                        <div className="break-all text-sm text-[#3F4A32]">{admin.email}</div>
+                        <div className="text-xs text-[#7C8B5F]">BetaDesk Admin · Added {new Date(admin.createdAt).toLocaleDateString()}</div>
+                      </div>
+                      <button type="button" onClick={() => void handleRemoveBetaDeskAdmin(admin.email)} className="rounded-xl border border-[#E5EADF] px-3 py-1.5 text-xs text-[#7A3D35] hover:bg-red-50">Remove</button>
+                    </li>
+                  ))}
+                </ul>
+              ) : <p className="rounded-xl border border-dashed border-[#CDD4CC] px-4 py-5 text-center text-sm text-[#7C8B5F]">No additional BetaDesk admins have been added.</p>}
+            </div>
+
+            <div className="mt-6 border-t border-[#E5EADF] pt-5">
+              <h3 className="text-sm font-semibold">BetaDesk attachment storage</h3>
+              <p className="mb-3 mt-1 text-xs text-[#7C8B5F]">
+                Google Drive files are stored privately in the Studio Super Admin’s Drive ({betaDeskSuperAdminEmail || 'not configured'}).
+              </p>
+              <div className="flex flex-wrap items-center gap-3">
+                <span className={`rounded-full px-3 py-1 text-xs ${betaDeskDriveConnected ? 'bg-emerald-50 text-emerald-800' : 'bg-amber-50 text-amber-800'}`}>
+                  Drive {betaDeskDriveConnected ? 'connected' : 'not connected'}
+                </span>
+                <button type="button" onClick={() => void handleConnectBetaDeskDrive()} disabled={connectingBetaDeskDrive || !betaDeskSuperAdminEmail} className="inline-flex items-center gap-2 rounded-xl border border-[#E5EADF] bg-white px-3 py-2 text-xs text-[#3F4A32] disabled:opacity-50">
+                  {connectingBetaDeskDrive ? 'Connecting…' : betaDeskDriveConnected ? 'Reconnect Google Drive' : 'Connect Google Drive'}
+                </button>
+              </div>
+              {betaDeskDriveNotice && <p role="status" className="mt-3 text-xs text-[#59645B]">{betaDeskDriveNotice}</p>}
+            </div>
           </section>
         </div>
       )}

@@ -6,11 +6,27 @@
   "outputDirectory": "public",
   "rewrites": [
     {
+      "source": "/api/betadesk/:path*",
+      "destination": "/api/betadesk/route?__betadesk_path=:path*"
+    },
+    {
+      "source": "/api/studio/betadesk/:path*",
+      "destination": "/api/studio/betadesk?__studio_path=betadesk/:path*"
+    },
+    {
+      "source": "/api/studio/invite-links/:path*",
+      "destination": "/api/studio/invite-links?__studio_path=invite-links/:path*"
+    },
+    {
       "source": "/studio",
       "destination": "/"
     },
     {
       "source": "/studio/:path*",
+      "destination": "/"
+    },
+    {
+      "source": "/feedback/:path*",
       "destination": "/"
     }
   ]
