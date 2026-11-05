@@ -915,23 +915,32 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
         return res.status(400).json({ error: 'The Studio Super Admin already has BetaDesk access.' });
       }
       const invitedBy = res.locals.studioEmail || 'Studio owner';
-      await saveBetaDeskAdmin(email, invitedBy);
+      let messageId: string | undefined;
       try {
-        const { messageId } = await sendAdminInvitationEmail({
+        ({ messageId } = await sendAdminInvitationEmail({
           recipient: email,
           role: 'BetaDesk Admin',
           invitedBy,
           accessUrl: studioAccessUrl(req, '/studio/beta-feedback'),
-        });
-        return res.status(201).json({ email, active: true, emailSent: true, messageId });
+        }));
       } catch (error) {
-        console.error('BetaDesk admin access was granted, but invitation email failed:', error);
+        console.error('Failed to send BetaDesk admin invitation:', error);
         return res.status(502).json({
-          error: 'BetaDesk admin access was granted, but the invitation email could not be sent. Check the server SMTP settings and retry.',
-          accessGranted: true,
+          error: 'The invitation email could not be sent, so BetaDesk admin access was not granted. Check the server SMTP settings and retry.',
           email,
         });
       }
+      try {
+        await saveBetaDeskAdmin(email, invitedBy);
+      } catch (error) {
+        console.error('BetaDesk invitation email was sent, but the admin role could not be saved:', error);
+        return res.status(500).json({
+          error: 'The invitation email was sent, but BetaDesk access could not be activated. Retry the invitation.',
+          emailSent: true,
+          email,
+        });
+      }
+      return res.status(201).json({ email, active: true, emailSent: true, messageId });
     } catch (error) {
       console.error('Failed to grant Studio BetaDesk role:', error);
       return res.status(500).json({ error: 'Could not grant BetaDesk admin access.' });
@@ -975,34 +984,43 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
       const token = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
       if (!token) return res.status(401).json({ error: 'Studio sign-in required.' });
       const decodedToken = await getStudioAuth().verifyIdToken(token);
-      await saveStudioInvite({
-        email: email.toLowerCase(),
-        role,
-        invitedBy: (decodedToken.email || '').toLowerCase(),
-        createdAt: new Date().toISOString(),
-      });
       const invitedBy = (decodedToken.email || '').toLowerCase();
       const roleName = role === 'admin'
         ? 'Studio Admin'
         : role === 'project_manager'
           ? 'Studio Project Manager'
           : 'Studio Viewer';
+      let messageId: string | undefined;
       try {
-        const { messageId } = await sendAdminInvitationEmail({
+        ({ messageId } = await sendAdminInvitationEmail({
           recipient: email.toLowerCase(),
           role: roleName,
           invitedBy,
           accessUrl: studioAccessUrl(req, '/studio'),
-        });
-        return res.status(201).json({ success: true, email: email.toLowerCase(), emailSent: true, messageId });
+        }));
       } catch (error) {
-        console.error('Studio invite was saved, but invitation email failed:', error);
+        console.error('Failed to send Studio invitation email:', error);
         return res.status(502).json({
-          error: 'Studio access was granted, but the invitation email could not be sent. Check the server SMTP settings and retry.',
-          inviteCreated: true,
+          error: 'The invitation email could not be sent, so Studio access was not granted. Check the server SMTP settings and retry.',
           email: email.toLowerCase(),
         });
       }
+      try {
+        await saveStudioInvite({
+          email: email.toLowerCase(),
+          role,
+          invitedBy,
+          createdAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        console.error('Studio invitation email was sent, but the invite could not be saved:', error);
+        return res.status(500).json({
+          error: 'The invitation email was sent, but Studio access could not be activated. Retry the invitation.',
+          emailSent: true,
+          email: email.toLowerCase(),
+        });
+      }
+      return res.status(201).json({ success: true, email: email.toLowerCase(), emailSent: true, messageId });
     } catch (error) {
       console.error('Failed to invite Studio user:', error);
       return res.status(500).json({ error: 'Could not invite this user.' });

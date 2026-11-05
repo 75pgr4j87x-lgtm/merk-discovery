@@ -306,13 +306,7 @@ export const StudioPortalApp: React.FC = () => {
         body: JSON.stringify({ email: inviteEmail, role: inviteRole }),
       });
       const data = await response.json();
-      if (!response.ok) {
-        if (data.inviteCreated) {
-          const invitesRes = await studioFetch('/api/studio/invites');
-          if (invitesRes.ok) setStudioInvites(await invitesRes.json());
-        }
-        throw new Error(data.error || 'Could not invite this user.');
-      }
+      if (!response.ok) throw new Error(data.error || 'Could not invite this user.');
       setInviteEmail('');
       setInviteRole('project_manager');
       setInviteNotice(data.emailSent ? `Invitation email sent to ${invitedEmail}.` : '');
@@ -350,16 +344,7 @@ export const StudioPortalApp: React.FC = () => {
         body: JSON.stringify({ email: betaDeskRoleEmail }),
       });
       const data = await response.json();
-      if (!response.ok) {
-        if (data.accessGranted) {
-          const rolesResponse = await studioFetch('/api/studio/betadesk/admins');
-          if (rolesResponse.ok) {
-            const roles = await rolesResponse.json() as BetaDeskRoleData;
-            setBetaDeskAdmins(roles.admins);
-          }
-        }
-        throw new Error(data.error || 'Could not grant BetaDesk admin access.');
-      }
+      if (!response.ok) throw new Error(data.error || 'Could not grant BetaDesk admin access.');
       setBetaDeskRoleEmail('');
       setBetaDeskRoleNotice(data.emailSent ? `Invitation email sent to ${invitedEmail}.` : '');
       const rolesResponse = await studioFetch('/api/studio/betadesk/admins');
