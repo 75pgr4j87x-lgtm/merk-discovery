@@ -20,6 +20,7 @@ import {
   createBetaDeskTester,
   createBetaDeskTicket,
   createBetaDeskUploadGrant,
+  deleteBetaDeskTester,
   completeBetaDeskUploadGrant,
   completeBetaDeskDriveAuthorization,
   createBetaDeskDriveAuthorizationUrl,
@@ -399,29 +400,47 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     }
   });
 
+  const loadBetaDeskTesterForProject = async (testerId: string, projectId: string) => {
+    const tester = await loadBetaDeskTester(testerId);
+    if (!tester || (tester.projectId && tester.projectId !== projectId)) return null;
+    if (!tester.projectId) {
+      const tickets = await loadBetaDeskTicketsForTester(testerId);
+      if (!tickets.some((ticket) => ticket.projectId === projectId)) return null;
+    }
+    return tester;
+  };
+
   app.post('/api/betadesk/admin/testers/:testerId/revoke', requireBetaDeskAdmin, async (req, res) => {
     const testerId = req.params.testerId;
     const projectId = betaDeskProjectFromRequest(req, res);
     if (!projectId) return;
     if (!/^[0-9a-f-]{36}$/i.test(testerId)) return res.status(400).json({ error: 'Invalid tester profile.' });
     try {
-      const tester = await loadBetaDeskTester(testerId);
+      const tester = await loadBetaDeskTesterForProject(testerId, projectId);
       if (!tester) return res.status(404).json({ error: 'Tester profile not found.' });
-      if (tester.projectId && tester.projectId !== projectId) {
-        return res.status(404).json({ error: 'Tester profile not found in this project.' });
-      }
-      if (!tester.projectId) {
-        const tickets = await loadBetaDeskTicketsForTester(testerId);
-        if (!tickets.some((ticket) => ticket.projectId === projectId)) {
-          return res.status(404).json({ error: 'Tester profile not found in this project.' });
-        }
-      }
       const revoked = await revokeBetaDeskTester(testerId);
       if (!revoked) return res.status(404).json({ error: 'Tester profile not found.' });
       return res.json({ success: true });
     } catch (error) {
       console.error('Failed to revoke BetaDesk tester link:', error);
       return res.status(500).json({ error: 'Could not revoke this tester link.' });
+    }
+  });
+
+  app.delete('/api/betadesk/admin/testers/:testerId', requireBetaDeskAdmin, async (req, res) => {
+    const testerId = req.params.testerId;
+    const projectId = betaDeskProjectFromRequest(req, res);
+    if (!projectId) return;
+    if (!/^[0-9a-f-]{36}$/i.test(testerId)) return res.status(400).json({ error: 'Invalid tester profile.' });
+    try {
+      const tester = await loadBetaDeskTesterForProject(testerId, projectId);
+      if (!tester) return res.status(404).json({ error: 'Tester profile not found in this project.' });
+      const deleted = await deleteBetaDeskTester(testerId);
+      if (!deleted) return res.status(404).json({ error: 'Tester profile not found.' });
+      return res.json({ success: true });
+    } catch (error) {
+      console.error('Failed to delete BetaDesk tester profile:', error);
+      return res.status(500).json({ error: 'Could not delete this tester profile.' });
     }
   });
 

@@ -4,6 +4,7 @@ import {
   AlertCircle,
   ArrowLeft,
   BarChart3,
+  Ban,
   Check,
   ChevronDown,
   CircleDot,
@@ -15,6 +16,7 @@ import {
   Search,
   Send,
   ShieldCheck,
+  Trash2,
   Ticket,
   Paperclip,
   FolderPlus,
@@ -163,6 +165,7 @@ export const BetaDeskAdmin: React.FC = () => {
   const [creatingTester, setCreatingTester] = React.useState(false);
   const [testerError, setTesterError] = React.useState('');
   const [testerProfilesExpanded, setTesterProfilesExpanded] = React.useState(true);
+  const [testerActionId, setTesterActionId] = React.useState('');
   const [selectedNumber, setSelectedNumber] = React.useState('');
   const [selectedTicket, setSelectedTicket] = React.useState<BetaTicket | null>(null);
   const [comments, setComments] = React.useState<BetaComment[]>([]);
@@ -403,7 +406,44 @@ export const BetaDeskAdmin: React.FC = () => {
     }
   };
 
+  const revokeTesterProfile = async (tester: BetaTester) => {
+    if (!window.confirm(`Revoke ${tester.displayName || 'this tester'}'s link? They will lose access to their tickets, but the tickets and comments will remain in this project.`)) return;
+    setTesterActionId(tester.id);
+    setTesterError('');
+    try {
+      const response = await studioFetch(
+        `/api/betadesk/admin/testers/${encodeURIComponent(tester.id)}/revoke?projectId=${encodeURIComponent(selectedProjectId)}`,
+        { method: 'POST' }
+      );
+      if (!response.ok) throw new Error(await responseError(response, 'Could not revoke this tester link.'));
+      setTesters((current) => current.map((item) => item.id === tester.id ? { ...item, active: false } : item));
+    } catch (revokeError) {
+      setTesterError(revokeError instanceof Error ? revokeError.message : 'Could not revoke this tester link.');
+    } finally {
+      setTesterActionId('');
+    }
+  };
+
+  const deleteTesterProfile = async (tester: BetaTester) => {
+    if (!window.confirm(`Delete ${tester.displayName || 'this tester'}'s link and profile? This permanently removes the profile and link, but keeps their ${tester.ticketCount} ticket${tester.ticketCount === 1 ? '' : 's'} and comments in this project.`)) return;
+    setTesterActionId(tester.id);
+    setTesterError('');
+    try {
+      const response = await studioFetch(
+        `/api/betadesk/admin/testers/${encodeURIComponent(tester.id)}?projectId=${encodeURIComponent(selectedProjectId)}`,
+        { method: 'DELETE' }
+      );
+      if (!response.ok) throw new Error(await responseError(response, 'Could not delete this tester profile.'));
+      setTesters((current) => current.filter((item) => item.id !== tester.id));
+    } catch (deleteError) {
+      setTesterError(deleteError instanceof Error ? deleteError.message : 'Could not delete this tester profile.');
+    } finally {
+      setTesterActionId('');
+    }
+  };
+
   const createTesterLink = async () => {
+    setTesterProfilesExpanded(true);
     setCreatingTester(true);
     setTesterError('');
     try {
@@ -675,16 +715,38 @@ export const BetaDeskAdmin: React.FC = () => {
                 </div>
               )}
               {testerError && <p role="status" className="mt-2 text-xs text-[#69745E]">{testerError}</p>}
-              <div className="mt-4 divide-y divide-[#F0F1EB]">
+              <div className="mt-4 max-h-64 overflow-y-auto divide-y divide-[#F0F1EB] overscroll-contain">
                 {testers.length === 0 ? <p className="py-3 text-xs text-[#8A9380]">No tester links created yet.</p> : testers.map((tester) => (
-                  <div key={tester.id} className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm">
-                    <div>
+                  <div key={tester.id} className="flex flex-wrap items-center justify-between gap-3 py-3 text-sm">
+                    <div className="min-w-0 flex-1">
                       <span className="font-medium">{tester.displayName || 'Name not set yet'}</span>
                       <span className="ml-2 text-xs text-[#8A9380]">{tester.ticketCount} ticket{tester.ticketCount === 1 ? '' : 's'} · added {formatDate(tester.createdAt)}</span>
                     </div>
-                    <span className={`rounded-full px-2 py-1 text-[11px] ${tester.active ? 'bg-emerald-50 text-emerald-700' : 'bg-stone-100 text-stone-600'}`}>
-                      {tester.active ? 'Link active' : 'Link revoked'}
-                    </span>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className={`rounded-full px-2 py-1 text-[11px] ${tester.active ? 'bg-emerald-50 text-emerald-700' : 'bg-stone-100 text-stone-600'}`}>
+                        {tester.active ? 'Link active' : 'Link revoked'}
+                      </span>
+                      <button
+                        type="button"
+                        aria-label={`Revoke ${tester.displayName || 'tester'} link`}
+                        title="Revoke link"
+                        disabled={!tester.active || testerActionId === tester.id}
+                        onClick={() => void revokeTesterProfile(tester)}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-amber-200 text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <Ban className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Delete ${tester.displayName || 'tester'} link and profile`}
+                        title="Delete link and profile; keep tickets"
+                        disabled={testerActionId === tester.id}
+                        onClick={() => void deleteTesterProfile(tester)}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-rose-200 text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>

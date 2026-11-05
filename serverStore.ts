@@ -1041,6 +1041,29 @@ export async function revokeBetaDeskTester(testerId: string): Promise<boolean> {
   return true;
 }
 
+export async function deleteBetaDeskTester(testerId: string): Promise<boolean> {
+  const db = getFirestore(getFirebaseApp());
+  const testerRef = getBetaDeskTestersCollection().doc(testerId);
+  const tester = await testerRef.get();
+  if (!tester.exists) return false;
+
+  const accessSnapshot = await getBetaDeskTesterAccessCollection().where('testerId', '==', testerId).get();
+  if (accessSnapshot.empty) {
+    await testerRef.delete();
+    return true;
+  }
+
+  for (let offset = 0; offset < accessSnapshot.docs.length; offset += FIRESTORE_BATCH_LIMIT) {
+    const batch = db.batch();
+    if (offset === 0) batch.delete(testerRef);
+    for (const document of accessSnapshot.docs.slice(offset, offset + FIRESTORE_BATCH_LIMIT)) {
+      batch.delete(document.ref);
+    }
+    await batch.commit();
+  }
+  return true;
+}
+
 export async function loadBetaDeskTickets(): Promise<BetaDeskTicket[]> {
   const snapshot = await getBetaDeskTicketsCollection().get();
   return snapshot.docs
