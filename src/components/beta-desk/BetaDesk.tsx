@@ -162,6 +162,7 @@ export const BetaDeskAdmin: React.FC = () => {
   const [newTesterUrl, setNewTesterUrl] = React.useState('');
   const [creatingTester, setCreatingTester] = React.useState(false);
   const [testerError, setTesterError] = React.useState('');
+  const [testerProfilesExpanded, setTesterProfilesExpanded] = React.useState(true);
   const [selectedNumber, setSelectedNumber] = React.useState('');
   const [selectedTicket, setSelectedTicket] = React.useState<BetaTicket | null>(null);
   const [comments, setComments] = React.useState<BetaComment[]>([]);
@@ -643,39 +644,52 @@ export const BetaDeskAdmin: React.FC = () => {
 
         <section className="mb-6 rounded-xl border border-[#E5EADF] bg-white p-4 sm:p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="text-lg">Tester profiles</h2>
-              <p className="mt-1 text-xs text-[#76806B]">Create a private feedback link for {selectedProject.name}. Each link and its tickets stay in this project.</p>
-            </div>
+            <button
+              type="button"
+              aria-expanded={testerProfilesExpanded}
+              aria-controls="betadesk-tester-profiles-content"
+              onClick={() => setTesterProfilesExpanded((expanded) => !expanded)}
+              className="min-w-0 flex-1 text-left"
+            >
+              <span className="flex items-center gap-2 text-lg">
+                Tester profiles
+                <ChevronDown className={`h-4 w-4 shrink-0 transition-transform ${testerProfilesExpanded ? 'rotate-180' : ''}`} />
+              </span>
+              <span className="mt-1 block text-xs text-[#76806B]">Create a private feedback link for {selectedProject.name}. Each link and its tickets stay in this project.</span>
+            </button>
             <button type="button" className={primaryButton} disabled={creatingTester || selectedProject.id === 'legacy'} onClick={() => void createTesterLink()}>
               <Ticket className="h-4 w-4" /> {creatingTester ? 'Creating…' : 'Create tester link'}
             </button>
           </div>
-          {selectedProject.id === 'legacy' && <p className="mt-3 text-xs text-[#76806B]">This project contains historic tickets. Create a new project to invite testers for new feedback.</p>}
-          {newTesterUrl && (
-            <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-              <label className="mb-2 block text-xs font-medium text-emerald-900">New private tester link — copy and send it to the client</label>
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <input readOnly value={newTesterUrl} className={`${inputClass} bg-white`} />
-                <button type="button" className={selectClass} onClick={() => void copyTesterLink()}>Copy link</button>
+          {testerProfilesExpanded && (
+            <div id="betadesk-tester-profiles-content">
+              {selectedProject.id === 'legacy' && <p className="mt-3 text-xs text-[#76806B]">This project contains historic tickets. Create a new project to invite testers for new feedback.</p>}
+              {newTesterUrl && (
+                <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                  <label className="mb-2 block text-xs font-medium text-emerald-900">New private tester link — copy and send it to the client</label>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <input readOnly value={newTesterUrl} className={`${inputClass} bg-white`} />
+                    <button type="button" className={selectClass} onClick={() => void copyTesterLink()}>Copy link</button>
+                  </div>
+                  <p className="mt-2 text-xs text-emerald-800">This URL contains the only usable copy of the secret. Save and share it securely; it cannot be recovered from the admin view.</p>
+                </div>
+              )}
+              {testerError && <p role="status" className="mt-2 text-xs text-[#69745E]">{testerError}</p>}
+              <div className="mt-4 divide-y divide-[#F0F1EB]">
+                {testers.length === 0 ? <p className="py-3 text-xs text-[#8A9380]">No tester links created yet.</p> : testers.map((tester) => (
+                  <div key={tester.id} className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm">
+                    <div>
+                      <span className="font-medium">{tester.displayName || 'Name not set yet'}</span>
+                      <span className="ml-2 text-xs text-[#8A9380]">{tester.ticketCount} ticket{tester.ticketCount === 1 ? '' : 's'} · added {formatDate(tester.createdAt)}</span>
+                    </div>
+                    <span className={`rounded-full px-2 py-1 text-[11px] ${tester.active ? 'bg-emerald-50 text-emerald-700' : 'bg-stone-100 text-stone-600'}`}>
+                      {tester.active ? 'Link active' : 'Link revoked'}
+                    </span>
+                  </div>
+                ))}
               </div>
-              <p className="mt-2 text-xs text-emerald-800">This URL contains the only usable copy of the secret. Save and share it securely; it cannot be recovered from the admin view.</p>
             </div>
           )}
-          {testerError && <p role="status" className="mt-2 text-xs text-[#69745E]">{testerError}</p>}
-          <div className="mt-4 divide-y divide-[#F0F1EB]">
-            {testers.length === 0 ? <p className="py-3 text-xs text-[#8A9380]">No tester links created yet.</p> : testers.map((tester) => (
-              <div key={tester.id} className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm">
-                <div>
-                  <span className="font-medium">{tester.displayName || 'Name not set yet'}</span>
-                  <span className="ml-2 text-xs text-[#8A9380]">{tester.ticketCount} ticket{tester.ticketCount === 1 ? '' : 's'} · added {formatDate(tester.createdAt)}</span>
-                </div>
-                <span className={`rounded-full px-2 py-1 text-[11px] ${tester.active ? 'bg-emerald-50 text-emerald-700' : 'bg-stone-100 text-stone-600'}`}>
-                  {tester.active ? 'Link active' : 'Link revoked'}
-                </span>
-              </div>
-            ))}
-          </div>
         </section>
 
         <section className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-5">
