@@ -160,6 +160,8 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
         return null;
       }
       const isStudioOwner = Boolean(ownerEmail && email === ownerEmail);
+      const studioInvite = isStudioOwner ? null : await loadStudioInvite(email);
+      const isStudioAdmin = isStudioOwner || studioInvite?.role === 'admin';
       let isSuperAdmin = false;
       try {
         const settings = await loadBetaDeskSettings(ownerEmail || '');
@@ -174,6 +176,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
         uid: decodedToken.uid,
         isSuperAdmin,
         isStudioOwner,
+        isStudioAdmin,
         isBetaDeskAdmin: Boolean(betaAdmin?.active),
       };
     } catch {
@@ -185,7 +188,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
   const requireBetaDeskAdmin: express.RequestHandler = async (req, res, next) => {
     const identity = await verifyBetaDeskIdentity(req, res);
     if (!identity) return;
-    if (!identity.isSuperAdmin && !identity.isStudioOwner && !identity.isBetaDeskAdmin) {
+    if (!identity.isSuperAdmin && !identity.isStudioAdmin && !identity.isBetaDeskAdmin) {
       res.status(403).json({ error: 'This Google account has not been granted BetaDesk admin access.' });
       return;
     }
@@ -306,7 +309,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     const identity = await verifyBetaDeskIdentity(req, res);
     if (!identity) return;
     return res.json({
-      allowed: identity.isSuperAdmin || identity.isStudioOwner || identity.isBetaDeskAdmin,
+      allowed: identity.isSuperAdmin || identity.isStudioAdmin || identity.isBetaDeskAdmin,
       canManageAdmins: identity.isSuperAdmin || identity.isStudioOwner,
       email: identity.email,
     });
