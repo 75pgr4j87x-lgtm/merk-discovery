@@ -101,6 +101,13 @@ interface StudioInvite {
   createdAt: string;
 }
 
+interface BetaDeskAdminRole {
+  email: string;
+  active: boolean;
+  invitedBy: string;
+  createdAt: string;
+}
+
 const roleLabel: Record<StudioInvite['role'], string> = {
   admin: 'Admin',
   project_manager: 'Project Manager',
@@ -131,6 +138,8 @@ export const StudioPortalApp: React.FC = () => {
   const [submissions, setSubmissions] = React.useState<StoredSubmission[]>([]);
   const [outbox, setOutbox] = React.useState<OutboxEntry[]>([]);
   const [studioInvites, setStudioInvites] = React.useState<StudioInvite[]>([]);
+  const [betaDeskAdmins, setBetaDeskAdmins] = React.useState<BetaDeskAdminRole[]>([]);
+  const [betaDeskSuperAdminEmail, setBetaDeskSuperAdminEmail] = React.useState('');
   const [isLoading, setIsLoading] = React.useState(false);
   const [searchTerm, setSearchTerm] = React.useState('');
   const [statusFilter, setStatusFilter] = React.useState<'all' | 'approved' | 'pending'>('all');
@@ -146,6 +155,9 @@ export const StudioPortalApp: React.FC = () => {
   const [inviteRole, setInviteRole] = React.useState<StudioInvite['role']>('project_manager');
   const [inviteError, setInviteError] = React.useState('');
   const [savingInvite, setSavingInvite] = React.useState(false);
+  const [betaDeskRoleEmail, setBetaDeskRoleEmail] = React.useState('');
+  const [betaDeskRoleError, setBetaDeskRoleError] = React.useState('');
+  const [savingBetaDeskRole, setSavingBetaDeskRole] = React.useState(false);
   const [effectsMuted, setEffectsMuted] = React.useState(soundTrack.getAreUiEffectsMuted());
 
   const handleButtonSound = (event: React.MouseEvent<HTMLDivElement>) => {
@@ -222,8 +234,23 @@ export const StudioPortalApp: React.FC = () => {
         setOutbox(outboxData);
       }
       if (isStudioOwner) {
-        const invitesRes = await studioFetch('/api/studio/invites');
+        const [invitesRes, betaDeskAdminsRes] = await Promise.all([
+          studioFetch('/api/studio/invites'),
+          studioFetch('/api/studio/betadesk/admins'),
+        ]);
         if (invitesRes.ok) setStudioInvites(await invitesRes.json());
+        if (betaDeskAdminsRes.ok) {
+          const data = await betaDeskAdminsRes.json() as {
+            admins: BetaDeskAdminRole[];
+            superAdminEmail: string;
+          };
+          setBetaDeskAdmins(data.admins);
+          setBetaDeskSuperAdminEmail(data.superAdminEmail);
+          setBetaDeskRoleError('');
+        } else {
+          const data = await betaDeskAdminsRes.json().catch(() => ({}));
+          setBetaDeskRoleError(data.error || 'Could not load BetaDesk roles.');
+        }
       }
     } catch (e) {
       console.error('Failed to load studio data:', e);
@@ -270,6 +297,44 @@ export const StudioPortalApp: React.FC = () => {
       setStudioInvites((current) => current.filter((invite) => invite.email !== email));
     } catch (error) {
       setInviteError(error instanceof Error ? error.message : 'Could not revoke this invitation.');
+    }
+  };
+
+  const handleAddBetaDeskAdmin = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSavingBetaDeskRole(true);
+    setBetaDeskRoleError('');
+    try {
+      const response = await studioFetch('/api/studio/betadesk/admins', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: betaDeskRoleEmail }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not grant BetaDesk admin access.');
+      setBetaDeskRoleEmail('');
+      const rolesResponse = await studioFetch('/api/studio/betadesk/admins');
+      if (!rolesResponse.ok) throw new Error('Role was added, but the updated role list could not be loaded.');
+      const roles = await rolesResponse.json() as { admins: BetaDeskAdminRole[]; superAdminEmail: string };
+      setBetaDeskAdmins(roles.admins);
+      setBetaDeskSuperAdminEmail(roles.superAdminEmail);
+    } catch (error) {
+      setBetaDeskRoleError(error instanceof Error ? error.message : 'Could not grant BetaDesk admin access.');
+    } finally {
+      setSavingBetaDeskRole(false);
+    }
+  };
+
+  const handleRemoveBetaDeskAdmin = async (email: string) => {
+    if (!window.confirm(`Remove BetaDesk admin access for ${email}? Studio access will not change.`)) return;
+    setBetaDeskRoleError('');
+    try {
+      const response = await studioFetch(`/api/studio/betadesk/admins/${encodeURIComponent(email)}`, { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not remove BetaDesk admin access.');
+      setBetaDeskAdmins((current) => current.filter((admin) => admin.email !== email));
+    } catch (error) {
+      setBetaDeskRoleError(error instanceof Error ? error.message : 'Could not remove BetaDesk admin access.');
     }
   };
 
@@ -1165,7 +1230,7 @@ export const StudioPortalApp: React.FC = () => {
       )}
       {isInviteManagerOpen && isStudioOwner && (
         <div className="fixed inset-0 z-[70] grid place-items-center bg-black/40 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setIsInviteManagerOpen(false); }}>
-          <section role="dialog" aria-modal="true" aria-labelledby="studio-access-title" className="w-full max-w-xl rounded-2xl border border-[#E5EADF] bg-white p-5 shadow-xl">
+          <section role="dialog" aria-modal="true" aria-labelledby="studio-access-title" className="w-full max-w-2xl rounded-2xl border border-[#E5EADF] bg-white p-5 shadow-xl">
             <div className="mb-4 flex items-start justify-between gap-3 border-b border-[#E5EADF] pb-3">
               <div><p className="text-xs uppercase tracking-wider text-[#7C8B5F]">Owner settings</p><h2 id="studio-access-title" className="mt-1 text-lg font-semibold">Studio access</h2></div>
               <button onClick={() => setIsInviteManagerOpen(false)} aria-label="Close Studio access" className="p-2 text-[#7C8B5F]"><X size={17} /></button>
@@ -1188,6 +1253,33 @@ export const StudioPortalApp: React.FC = () => {
                 <button onClick={() => handleRevokeInvite(invite.email)} className="rounded-xl border border-[#E5EADF] px-3 py-1.5 text-xs text-[#7A3D35] hover:bg-red-50">Revoke</button>
               </li>)}
             </ul> : <p className="rounded-xl border border-dashed border-[#CDD4CC] px-4 py-7 text-center text-sm text-[#7C8B5F]">No invited users yet.</p>}
+
+            <div className="mt-6 border-t border-[#E5EADF] pt-5">
+              <h3 className="text-sm font-semibold">BetaDesk admin roles</h3>
+              <p className="mb-3 mt-1 text-xs text-[#7C8B5F]">
+                Grant BetaDesk-only access here. This does not change anyone’s Studio role. Super BetaDesk Admin: {betaDeskSuperAdminEmail || 'Loading…'}.
+              </p>
+              <form onSubmit={handleAddBetaDeskAdmin} className="mb-4 flex flex-col gap-2 sm:flex-row">
+                <input type="email" required value={betaDeskRoleEmail} onChange={(event) => setBetaDeskRoleEmail(event.target.value)} placeholder="Google account email" className="min-w-0 flex-1 rounded-xl border border-[#E5EADF] px-3 py-2.5 text-sm" aria-label="Google account email for BetaDesk admin" />
+                <button disabled={savingBetaDeskRole} className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#3F4A32] px-4 py-2.5 text-sm text-[#FAF6F1] disabled:opacity-50">
+                  <Ticket size={15} className="text-[#D9A441]" />{savingBetaDeskRole ? 'Adding…' : 'Add BetaDesk admin'}
+                </button>
+              </form>
+              {betaDeskRoleError && <p role="alert" className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{betaDeskRoleError}</p>}
+              {betaDeskAdmins.length ? (
+                <ul className="max-h-48 divide-y divide-[#E5EADF] overflow-y-auto rounded-xl border border-[#E5EADF] px-3">
+                  {betaDeskAdmins.map((admin) => (
+                    <li key={admin.email} className="flex flex-wrap items-center justify-between gap-2 py-3">
+                      <div className="min-w-0">
+                        <div className="break-all text-sm text-[#3F4A32]">{admin.email}</div>
+                        <div className="text-xs text-[#7C8B5F]">BetaDesk Admin · Added {new Date(admin.createdAt).toLocaleDateString()}</div>
+                      </div>
+                      <button type="button" onClick={() => void handleRemoveBetaDeskAdmin(admin.email)} className="rounded-xl border border-[#E5EADF] px-3 py-1.5 text-xs text-[#7A3D35] hover:bg-red-50">Remove</button>
+                    </li>
+                  ))}
+                </ul>
+              ) : <p className="rounded-xl border border-dashed border-[#CDD4CC] px-4 py-5 text-center text-sm text-[#7C8B5F]">No additional BetaDesk admins have been added.</p>}
+            </div>
           </section>
         </div>
       )}
