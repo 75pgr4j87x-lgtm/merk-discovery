@@ -14,6 +14,10 @@
       "destination": "/api/studio/betadesk?__studio_path=betadesk/:path*"
     },
     {
+      "source": "/api/studio/invite-links/:path*",
+      "destination": "/api/studio/invite-links?__studio_path=invite-links/:path*"
+    },
+    {
       "source": "/studio",
       "destination": "/"
     },
