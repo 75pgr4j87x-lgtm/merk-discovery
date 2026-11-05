@@ -8,6 +8,7 @@ import { generateProjectBrief } from './services/briefGenerator';
 import { ClientProjectView } from './components/ClientProjectView';
 import { BetaDeskAdmin } from './components/beta-desk/BetaDesk';
 import { TesterLinkRequired, TesterPortal } from './components/beta-desk/TesterPortal';
+import { StudioInviteClaim } from './components/studio/StudioInviteClaim';
 
 export default function App() {
   const [answers, setAnswers] = React.useState<DiscoveryAnswers>(INITIAL_ANSWERS);
@@ -18,6 +19,9 @@ export default function App() {
       || new URLSearchParams(window.location.search).get('project')
     : null;
   const pathname = typeof window !== 'undefined' ? window.location.pathname : '/';
+  const adminInviteToken = pathname === '/studio/invite' && typeof window !== 'undefined'
+    ? new URLSearchParams(window.location.hash.slice(1)).get('invite') || ''
+    : '';
 
   // Callback to synthesize brief
   const handleCompleteAndSynthesize = async (latestAnswers?: DiscoveryAnswers): Promise<string> => {
@@ -49,6 +53,15 @@ export default function App() {
 
   if (pathname === '/studio/beta-feedback' || pathname.startsWith('/studio/beta-feedback/')) {
     return <BetaDeskAdmin />;
+  }
+
+  if (pathname === '/studio/invite') {
+    return (
+      <>
+        <StudioInviteClaim token={adminInviteToken} />
+        <CookieConsent />
+      </>
+    );
   }
 
   if (pathname === '/feedback/submit') {

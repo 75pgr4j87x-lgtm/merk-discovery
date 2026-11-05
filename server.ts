@@ -14,6 +14,10 @@ import {
 import {
   deleteSubmission,
   deleteStudioInvite,
+  claimStudioAdminInviteLink,
+  loadStudioAdminInviteLinks,
+  revokeStudioAdminInviteLink,
+  saveStudioAdminInviteLink,
   addBetaDeskComment,
   claimBetaDeskTesterName,
   consumeBetaDeskRateLimit,
@@ -55,6 +59,7 @@ import {
   type ProjectComment,
   type ProjectTask,
   type StudioProject,
+  type StudioAdminInviteLink,
   type BetaDeskCategory,
   type BetaDeskPriority,
   type BetaDeskStatus,
@@ -198,6 +203,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     const identity = await verifyStudioIdentity(req, res);
     if (!identity) return;
     if (identity.isOwner) {
+      res.locals.studioEmail = identity.email;
       next();
       return;
     }
@@ -968,6 +974,108 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     } catch (error) {
       console.error('Failed to load Studio invites:', error);
       return res.status(500).json({ error: 'Could not load invitations.' });
+    }
+  });
+
+  app.get('/api/studio/invite-links', requireStudioOwnerAccess, async (_req, res) => {
+    try {
+      return res.json(await loadStudioAdminInviteLinks());
+    } catch (error) {
+      console.error('Failed to load Studio admin invite links:', error);
+      return res.status(500).json({ error: 'Could not load invite links.' });
+    }
+  });
+
+  app.post('/api/studio/invite-links', requireStudioOwnerAccess, async (req, res) => {
+    const { isValid, email } = sanitizeEmail(req.body?.email);
+    if (!isValid) return res.status(400).json({ error: 'Enter a valid Google account email address.' });
+    const kind = req.body?.kind;
+    const role = req.body?.role;
+    let inviteKind: StudioAdminInviteLink['kind'];
+    let inviteRole: StudioAdminInviteLink['role'];
+    if (kind === 'studio' && ['admin', 'project_manager', 'viewer'].includes(role)) {
+      inviteKind = 'studio';
+      inviteRole = role;
+    } else if (kind === 'betadesk' && role === 'betadesk_admin') {
+      inviteKind = 'betadesk';
+      inviteRole = 'betadesk_admin';
+    } else {
+      return res.status(400).json({ error: 'Choose a valid invitation type and role.' });
+    }
+    if (email === ownerEmail) {
+      return res.status(400).json({ error: 'The Studio Super Admin already has administrator access.' });
+    }
+
+    try {
+      const token = randomBytes(32).toString('base64url');
+      const tokenHash = hashShareToken(token);
+      const createdAt = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+      const invite: StudioAdminInviteLink = {
+        email,
+        kind: inviteKind,
+        role: inviteRole,
+        invitedBy: res.locals.studioEmail || 'Studio owner',
+        createdAt,
+        expiresAt,
+      };
+      await saveStudioAdminInviteLink(tokenHash, invite);
+      const inviteUrl = new URL('/studio/invite', studioAccessUrl(req, '/studio'));
+      inviteUrl.hash = `invite=${token}`;
+      return res.status(201).json({ email, inviteUrl: inviteUrl.toString(), expiresAt });
+    } catch (error) {
+      console.error('Failed to create Studio admin invite link:', error);
+      return res.status(500).json({ error: 'Could not create an invite link.' });
+    }
+  });
+
+  app.delete('/api/studio/invite-links/:id', requireStudioOwnerAccess, async (req, res) => {
+    const id = req.params.id;
+    if (!/^[a-f0-9]{64}$/.test(id)) return res.status(400).json({ error: 'Invalid invite link.' });
+    try {
+      await revokeStudioAdminInviteLink(id);
+      return res.json({ success: true });
+    } catch (error) {
+      console.error('Failed to revoke Studio admin invite link:', error);
+      return res.status(500).json({ error: 'Could not revoke this invite link.' });
+    }
+  });
+
+  app.post('/api/studio/invite-links/claim', async (req, res) => {
+    const token = req.body?.token;
+    if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(token)) {
+      return res.status(400).json({ error: 'This invite link is invalid or has already been used.' });
+    }
+    if (!ownerEmail) {
+      return res.status(503).json({ error: 'Studio Super Admin is not configured on the server.' });
+    }
+    const authorization = req.get('authorization') || '';
+    const idToken = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
+    if (!idToken) return res.status(401).json({ error: 'Sign in with the invited Google account to claim this link.' });
+
+    let decodedToken;
+    try {
+      decodedToken = await getStudioAuth().verifyIdToken(idToken);
+    } catch {
+      return res.status(401).json({ error: 'Could not verify the signed-in Google account.' });
+    }
+
+    const email = (decodedToken.email || '').trim().toLowerCase();
+    if (!email || !decodedToken.email_verified) {
+      return res.status(403).json({ error: 'A verified Google account is required to claim this invite.' });
+    }
+
+    try {
+      const result = await claimStudioAdminInviteLink(hashShareToken(token), email);
+      if (result === 'email_mismatch') {
+        return res.status(403).json({ error: 'This link is tied to a different Google account. Sign in with the invited email address.' });
+      }
+      if (result === 'expired') return res.status(410).json({ error: 'This invite link has expired. Ask the Studio Super Admin for a new one.' });
+      if (result === 'invalid') return res.status(404).json({ error: 'This invite link is invalid or has already been used.' });
+      return res.json({ success: true, kind: result === 'claimed_studio' ? 'studio' : 'betadesk' });
+    } catch (error) {
+      console.error('Failed to claim Studio admin invite link:', error);
+      return res.status(500).json({ error: 'Could not claim this invite. Try again.' });
     }
   });
 

@@ -20,6 +20,7 @@ const SUBMISSIONS_COLLECTION = 'studioSubmissions';
 const OUTBOX_COLLECTION = 'emailOutbox';
 const PROJECTS_COLLECTION = 'studioProjects';
 const STUDIO_INVITES_COLLECTION = 'studioInvites';
+const STUDIO_ADMIN_INVITE_LINKS_COLLECTION = 'studioAdminInviteLinks';
 const FIRESTORE_BATCH_LIMIT = 450;
 
 export interface ProjectTask {
@@ -68,6 +69,15 @@ export interface StudioInvite {
   role: 'admin' | 'project_manager' | 'viewer';
   invitedBy: string;
   createdAt: string;
+}
+
+export interface StudioAdminInviteLink {
+  email: string;
+  kind: 'studio' | 'betadesk';
+  role: 'admin' | 'project_manager' | 'viewer' | 'betadesk_admin';
+  invitedBy: string;
+  createdAt: string;
+  expiresAt: string;
 }
 
 export type BetaDeskStatus =
@@ -201,6 +211,10 @@ function getProjectsCollection() {
 
 function getStudioInvitesCollection() {
   return getFirestore(getFirebaseApp()).collection(STUDIO_INVITES_COLLECTION);
+}
+
+function getStudioAdminInviteLinksCollection() {
+  return getFirestore(getFirebaseApp()).collection(STUDIO_ADMIN_INVITE_LINKS_COLLECTION);
 }
 
 function getBetaDeskTicketsCollection() {
@@ -801,6 +815,96 @@ export async function saveStudioInvite(invite: StudioInvite): Promise<void> {
 
 export async function deleteStudioInvite(email: string): Promise<void> {
   await getStudioInvitesCollection().doc(email.trim().toLowerCase()).delete();
+}
+
+export async function saveStudioAdminInviteLink(
+  tokenHash: string,
+  invite: StudioAdminInviteLink
+): Promise<void> {
+  await getStudioAdminInviteLinksCollection().doc(tokenHash).create(invite);
+}
+
+export async function loadStudioAdminInviteLinks(): Promise<Array<{
+  id: string;
+  email: string;
+  kind: StudioAdminInviteLink['kind'];
+  role: StudioAdminInviteLink['role'];
+  createdAt: string;
+  expiresAt: string;
+}>> {
+  const snapshot = await getStudioAdminInviteLinksCollection().get();
+  const now = Date.now();
+  const expiredDocuments = snapshot.docs.filter((document) => {
+    const expiresAt = Date.parse((document.data() as StudioAdminInviteLink).expiresAt);
+    return !Number.isFinite(expiresAt) || expiresAt <= now;
+  });
+  for (let offset = 0; offset < expiredDocuments.length; offset += FIRESTORE_BATCH_LIMIT) {
+    const batch = getFirestore(getFirebaseApp()).batch();
+    for (const document of expiredDocuments.slice(offset, offset + FIRESTORE_BATCH_LIMIT)) {
+      batch.delete(document.ref);
+    }
+    await batch.commit();
+  }
+
+  return snapshot.docs
+    .map((document) => ({
+      id: document.id,
+      ...(document.data() as StudioAdminInviteLink),
+    }))
+    .filter((invite) => Date.parse(invite.expiresAt) > now)
+    .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
+}
+
+export async function revokeStudioAdminInviteLink(tokenHash: string): Promise<void> {
+  await getStudioAdminInviteLinksCollection().doc(tokenHash).delete();
+}
+
+export async function claimStudioAdminInviteLink(
+  tokenHash: string,
+  email: string
+): Promise<'claimed_studio' | 'claimed_betadesk' | 'email_mismatch' | 'expired' | 'invalid'> {
+  const firestore = getFirestore(getFirebaseApp());
+  const linkRef = getStudioAdminInviteLinksCollection().doc(tokenHash);
+
+  return firestore.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(linkRef);
+    if (!snapshot.exists) return 'invalid';
+
+    const invite = snapshot.data() as StudioAdminInviteLink;
+    const expiresAt = Date.parse(invite.expiresAt);
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      transaction.delete(linkRef);
+      return 'expired';
+    }
+
+    if (invite.email !== email.trim().toLowerCase()) return 'email_mismatch';
+
+    if (invite.kind === 'studio') {
+      if (!['admin', 'project_manager', 'viewer'].includes(invite.role)) {
+        transaction.delete(linkRef);
+        return 'invalid';
+      }
+      transaction.set(getStudioInvitesCollection().doc(invite.email), {
+        email: invite.email,
+        role: invite.role,
+        invitedBy: invite.invitedBy,
+        createdAt: invite.createdAt,
+      });
+    } else if (invite.kind === 'betadesk' && invite.role === 'betadesk_admin') {
+      transaction.set(getBetaDeskAdminsCollection().doc(invite.email), {
+        email: invite.email,
+        active: true,
+        invitedBy: invite.invitedBy,
+        createdAt: invite.createdAt,
+      });
+    } else {
+      transaction.delete(linkRef);
+      return 'invalid';
+    }
+
+    transaction.delete(linkRef);
+    return invite.kind === 'studio' ? 'claimed_studio' : 'claimed_betadesk';
+  });
 }
 
 export async function loadStudioProject(id: string): Promise<StudioProject | null> {
