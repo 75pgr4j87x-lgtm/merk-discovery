@@ -6,13 +6,32 @@ import {
   StoredSubmission,
   buildSubmissionsExcelWorkbook,
   buildSingleClientExcel,
+  sendBetaDeskEmail,
   sendBriefCopyEmail,
   DEFAULT_FOUNDER_EMAIL,
 } from './serverEmailAndExcel.js';
 import {
   deleteSubmission,
   deleteStudioInvite,
+  addBetaDeskComment,
+  claimBetaDeskTesterName,
+  consumeBetaDeskRateLimit,
+  createBetaDeskProject,
+  createBetaDeskTester,
+  createBetaDeskTicket,
+  createBetaDeskUploadGrant,
+  getBetaDeskAttachmentUrl,
   getStudioAuth,
+  loadBetaDeskAdmin,
+  loadBetaDeskAdmins,
+  loadBetaDeskComments,
+  loadBetaDeskProject,
+  loadBetaDeskProjects,
+  loadBetaDeskTicket,
+  loadBetaDeskTickets,
+  loadBetaDeskTicketsForTester,
+  loadBetaDeskTesterByTokenHash,
+  loadBetaDeskTesters,
   loadStudioInvite,
   findProjectByShareTokenHash,
   loadStudioInvites,
@@ -24,9 +43,18 @@ import {
   saveStudioInvite,
   saveStudioProject,
   saveSubmission,
+  saveBetaDeskNotification,
+  saveBetaDeskAdmin,
   type ProjectComment,
   type ProjectTask,
   type StudioProject,
+  type BetaDeskCategory,
+  type BetaDeskPriority,
+  type BetaDeskStatus,
+  revokeBetaDeskTester,
+  removeBetaDeskAdmin,
+  verifyBetaDeskUploadGrant,
+  updateBetaDeskTicket,
 } from './serverStore.js';
 import {
   sanitizeSubmissionPayload,
@@ -70,7 +98,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
       }
       const isOwner = Boolean(ownerEmail && email === ownerEmail);
       const invite = isOwner ? null : await loadStudioInvite(email);
-      return { isOwner, role: isOwner ? 'super_admin' as const : invite?.role || null };
+      return { isOwner, role: isOwner ? 'super_admin' as const : invite?.role || null, email };
     } catch {
       res.status(401).json({ error: 'Invalid or expired studio sign-in.' });
       return null;
@@ -104,10 +132,57 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     if (!identity) return;
     if (identity.isOwner || identity.role === 'admin') {
       res.locals.studioRole = identity.role;
+      res.locals.studioEmail = identity.email;
       next();
       return;
     }
     res.status(403).json({ error: 'Your Studio role does not allow this action.' });
+  };
+
+  const verifyBetaDeskIdentity = async (req: express.Request, res: express.Response) => {
+    const authorization = req.get('authorization') || '';
+    const token = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
+    if (!token) {
+      res.status(401).json({ error: 'BetaDesk sign-in required.' });
+      return null;
+    }
+    try {
+      const decodedToken = await getStudioAuth().verifyIdToken(token);
+      const email = (decodedToken.email || '').trim().toLowerCase();
+      if (!email || !decodedToken.email_verified || decodedToken.firebase?.sign_in_provider !== 'google.com') {
+        res.status(403).json({ error: 'A verified Google email is required for BetaDesk administration.' });
+        return null;
+      }
+      const isOwner = Boolean(ownerEmail && email === ownerEmail);
+      const betaAdmin = isOwner ? null : await loadBetaDeskAdmin(email);
+      return { email, isOwner, isBetaDeskAdmin: Boolean(betaAdmin?.active) };
+    } catch {
+      res.status(401).json({ error: 'Invalid or expired BetaDesk sign-in.' });
+      return null;
+    }
+  };
+
+  const requireBetaDeskAdmin: express.RequestHandler = async (req, res, next) => {
+    const identity = await verifyBetaDeskIdentity(req, res);
+    if (!identity) return;
+    if (!identity.isOwner && !identity.isBetaDeskAdmin) {
+      res.status(403).json({ error: 'This Google account has not been granted BetaDesk admin access.' });
+      return;
+    }
+    res.locals.betaDeskEmail = identity.email;
+    res.locals.canManageBetaDeskAdmins = identity.isOwner;
+    next();
+  };
+
+  const requireBetaDeskOwner: express.RequestHandler = async (req, res, next) => {
+    const identity = await verifyBetaDeskIdentity(req, res);
+    if (!identity) return;
+    if (!identity.isOwner) {
+      res.status(403).json({ error: 'Only the Studio owner can manage BetaDesk administrator access.' });
+      return;
+    }
+    res.locals.betaDeskEmail = identity.email;
+    next();
   };
 
   const requireStudioOwnerAccess: express.RequestHandler = async (req, res, next) => {
@@ -119,6 +194,550 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     }
     res.status(403).json({ error: 'Only the Studio owner can manage invitations.' });
   };
+
+  const betaDeskCategories: BetaDeskCategory[] = [
+    'Bug Report',
+    'Feature Request',
+    'General Feedback',
+    'UI/UX Improvement',
+    'Technical Issue',
+    'Other',
+  ];
+  const betaDeskPriorities: BetaDeskPriority[] = ['Critical', 'High', 'Medium', 'Low'];
+  const betaDeskStatuses: BetaDeskStatus[] = [
+    'Open',
+    'Under Review',
+    'In Progress',
+    'Awaiting User Response',
+    'Resolved',
+    'Closed',
+  ];
+  const hashBetaDeskToken = (token: string) => createHash('sha256').update(token).digest('hex');
+  const betaDeskPublicUrl = (req: express.Request, token: string) => {
+    const configuredUrl = process.env.PUBLIC_APP_URL
+      || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null);
+    const requestHost = req.get('host') || '';
+    const localUrl = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(requestHost)
+      ? `http://${requestHost}`
+      : null;
+    const baseUrl = configuredUrl || localUrl;
+    if (!baseUrl) throw new Error('PUBLIC_APP_URL must be configured for BetaDesk tester links.');
+    const url = new URL(baseUrl);
+    if (url.protocol !== 'https:' && url.hostname !== 'localhost' && url.hostname !== '127.0.0.1') {
+      throw new Error('PUBLIC_APP_URL must use HTTPS.');
+    }
+    const shareUrl = new URL('/feedback/tester', url);
+    shareUrl.hash = `tester=${encodeURIComponent(token)}`;
+    return shareUrl.toString();
+  };
+  const recordBetaDeskEmail = async (
+    ticketNumber: string,
+    recipient: string,
+    notificationType: 'admin_new_ticket',
+    subject: string,
+    text: string
+  ) => {
+    const notificationId = randomUUID();
+    let deliveryStatus: 'sent' | 'recorded' | 'failed' = 'failed';
+    let errorMessage: string | undefined;
+    try {
+      deliveryStatus = await sendBetaDeskEmail({ recipient, subject, text });
+    } catch (error) {
+      console.error(`BetaDesk email delivery failed for ${recipient}:`, error);
+      errorMessage = error instanceof Error ? error.message.slice(0, 500) : 'Email delivery failed.';
+    }
+    try {
+      await saveBetaDeskNotification({
+        id: notificationId,
+        ticketNumber,
+        recipient,
+        notificationType,
+        deliveryStatus,
+        createdAt: new Date().toISOString(),
+        ...(errorMessage ? { errorMessage } : {}),
+      });
+    } catch (error) {
+      console.error(`Failed to store BetaDesk notification log for ${recipient}:`, error);
+    }
+    return deliveryStatus;
+  };
+  const betaDeskTesterToken = (req: express.Request) => {
+    const token = (req.get('authorization') || '').match(/^Bearer\s+([A-Za-z0-9_-]{40,60})$/i)?.[1];
+    return token || null;
+  };
+
+  app.get('/api/betadesk/admin/access', async (req, res) => {
+    const identity = await verifyBetaDeskIdentity(req, res);
+    if (!identity) return;
+    return res.json({
+      allowed: identity.isOwner || identity.isBetaDeskAdmin,
+      canManageAdmins: identity.isOwner,
+      email: identity.email,
+    });
+  });
+
+  app.get('/api/betadesk/admin/admins', requireBetaDeskAdmin, async (_req, res) => {
+    try {
+      return res.json({
+        admins: await loadBetaDeskAdmins(),
+        canManageAdmins: Boolean(res.locals.canManageBetaDeskAdmins),
+      });
+    } catch (error) {
+      console.error('Failed to load BetaDesk admins:', error);
+      return res.status(500).json({ error: 'Could not load BetaDesk admin access.' });
+    }
+  });
+
+  app.post('/api/betadesk/admin/admins', requireBetaDeskOwner, async (req, res) => {
+    const { isValid, email } = sanitizeEmail(req.body?.email);
+    if (!isValid) return res.status(400).json({ error: 'Enter a valid Google account email address.' });
+    if (email === ownerEmail) return res.status(400).json({ error: 'The Studio owner already has BetaDesk access.' });
+    try {
+      await saveBetaDeskAdmin(email, res.locals.betaDeskEmail || 'Studio owner');
+      return res.status(201).json({ email, active: true });
+    } catch (error) {
+      console.error('Failed to grant BetaDesk admin access:', error);
+      return res.status(500).json({ error: 'Could not grant BetaDesk admin access.' });
+    }
+  });
+
+  app.delete('/api/betadesk/admin/admins/:email', requireBetaDeskOwner, async (req, res) => {
+    const { isValid, email } = sanitizeEmail(req.params.email);
+    if (!isValid) return res.status(400).json({ error: 'Invalid administrator email address.' });
+    if (email === ownerEmail) return res.status(400).json({ error: 'The Studio owner cannot be removed here.' });
+    try {
+      await removeBetaDeskAdmin(email);
+      return res.json({ success: true });
+    } catch (error) {
+      console.error('Failed to remove BetaDesk admin access:', error);
+      return res.status(500).json({ error: 'Could not remove BetaDesk admin access.' });
+    }
+  });
+
+  app.get('/api/betadesk/admin/projects', requireBetaDeskAdmin, async (_req, res) => {
+    try {
+      return res.json(await loadBetaDeskProjects());
+    } catch (error) {
+      console.error('Failed to load BetaDesk projects:', error);
+      return res.status(500).json({ error: 'Could not load projects.' });
+    }
+  });
+
+  app.post('/api/betadesk/admin/projects', requireBetaDeskAdmin, async (req, res) => {
+    const name = sanitizePlainText(req.body?.name, 100);
+    const description = sanitizePlainText(req.body?.description, 500);
+    if (name.length < 2) return res.status(400).json({ error: 'Enter a project name.' });
+    try {
+      const project = await createBetaDeskProject(name, description, res.locals.betaDeskEmail || 'BetaDesk admin');
+      return res.status(201).json(project);
+    } catch (error) {
+      console.error('Failed to create BetaDesk project:', error);
+      return res.status(500).json({ error: 'Could not create project.' });
+    }
+  });
+
+  app.post('/api/betadesk/admin/testers', requireBetaDeskAdmin, async (req, res) => {
+    try {
+      const token = randomBytes(32).toString('base64url');
+      const tester = await createBetaDeskTester(hashBetaDeskToken(token));
+      return res.status(201).json({
+        tester,
+        shareUrl: betaDeskPublicUrl(req, token),
+      });
+    } catch (error) {
+      console.error('Failed to create BetaDesk tester link:', error);
+      return res.status(500).json({ error: 'Could not create a tester link.' });
+    }
+  });
+
+  app.get('/api/betadesk/admin/testers', requireBetaDeskAdmin, async (_req, res) => {
+    try {
+      const [testers, tickets] = await Promise.all([loadBetaDeskTesters(), loadBetaDeskTickets()]);
+      return res.json(testers.map((tester) => ({
+        ...tester,
+        ticketCount: tickets.filter((ticket) => ticket.testerId === tester.id).length,
+      })));
+    } catch (error) {
+      console.error('Failed to load BetaDesk testers:', error);
+      return res.status(500).json({ error: 'Could not load tester profiles.' });
+    }
+  });
+
+  app.post('/api/betadesk/admin/testers/:testerId/revoke', requireBetaDeskAdmin, async (req, res) => {
+    const testerId = req.params.testerId;
+    if (!/^[0-9a-f-]{36}$/i.test(testerId)) return res.status(400).json({ error: 'Invalid tester profile.' });
+    try {
+      const revoked = await revokeBetaDeskTester(testerId);
+      if (!revoked) return res.status(404).json({ error: 'Tester profile not found.' });
+      return res.json({ success: true });
+    } catch (error) {
+      console.error('Failed to revoke BetaDesk tester link:', error);
+      return res.status(500).json({ error: 'Could not revoke this tester link.' });
+    }
+  });
+
+  app.get('/api/betadesk/tester', async (req, res) => {
+    const token = betaDeskTesterToken(req);
+    if (!token) {
+      return res.status(404).json({ error: 'This tester link is invalid or revoked.' });
+    }
+    try {
+      const tester = await loadBetaDeskTesterByTokenHash(hashBetaDeskToken(token));
+      if (!tester) return res.status(404).json({ error: 'This tester link is invalid or revoked.' });
+      const tickets = tester.displayName ? await loadBetaDeskTicketsForTester(tester.id) : [];
+      return res.json({ tester, tickets });
+    } catch (error) {
+      console.error('Failed to load BetaDesk tester portal:', error);
+      return res.status(500).json({ error: 'Could not load this tester profile.' });
+    }
+  });
+
+  app.get('/api/betadesk/tester/projects', async (req, res) => {
+    const token = betaDeskTesterToken(req);
+    if (!token) return res.status(401).json({ error: 'Tester link required.' });
+    try {
+      const tester = await loadBetaDeskTesterByTokenHash(hashBetaDeskToken(token));
+      if (!tester) return res.status(404).json({ error: 'This tester link is invalid or revoked.' });
+      const projects = (await loadBetaDeskProjects())
+        .filter((project) => project.active && project.id !== 'legacy')
+        .map(({ id, name, description, active, createdAt }) => ({ id, name, description, active, createdAt }));
+      return res.json(projects);
+    } catch (error) {
+      console.error('Failed to load tester project list:', error);
+      return res.status(500).json({ error: 'Could not load projects.' });
+    }
+  });
+
+  app.post('/api/betadesk/tester/profile', async (req, res) => {
+    const token = betaDeskTesterToken(req);
+    const displayName = sanitizePlainText(req.body?.displayName, 100);
+    if (!token || displayName.length < 1) {
+      return res.status(400).json({ error: 'Enter your name to activate this tester link.' });
+    }
+    try {
+      const tester = await loadBetaDeskTesterByTokenHash(hashBetaDeskToken(token));
+      if (!tester) return res.status(404).json({ error: 'This tester link is invalid or revoked.' });
+      const claimed = await claimBetaDeskTesterName(tester.id, displayName);
+      if (!claimed) return res.status(404).json({ error: 'This tester profile is unavailable.' });
+      return res.json({ tester: claimed, tickets: await loadBetaDeskTicketsForTester(claimed.id) });
+    } catch (error) {
+      console.error('Failed to claim BetaDesk tester name:', error);
+      return res.status(500).json({ error: 'Could not save your name.' });
+    }
+  });
+
+  app.post('/api/betadesk/tester/uploads', async (req, res) => {
+    const token = betaDeskTesterToken(req);
+    const fileName = sanitizePlainText(req.body?.fileName, 120).replace(/[\\/]/g, '_');
+    const contentType = sanitizePlainText(req.body?.contentType, 100).toLowerCase();
+    const size = Number(req.body?.size);
+    if (!token || !fileName || !Number.isSafeInteger(size) || size < 1) {
+      return res.status(400).json({ error: 'Provide a valid file name, type, and size.' });
+    }
+    try {
+      const tester = await loadBetaDeskTesterByTokenHash(hashBetaDeskToken(token));
+      if (!tester) return res.status(404).json({ error: 'This tester link is invalid or revoked.' });
+      if (!await consumeBetaDeskRateLimit(`uploads_${tester.id}`, 10, 60 * 60 * 1000)) {
+        return res.status(429).json({ error: 'Too many upload links requested. Try again later.' });
+      }
+      const upload = await createBetaDeskUploadGrant(tester.id, fileName, contentType, size);
+      return res.status(201).json(upload);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'FIREBASE_STORAGE_BUCKET is not configured.') {
+        return res.status(503).json({ error: 'File uploads are not configured on this server.' });
+      }
+      console.error('Failed to create a BetaDesk upload grant:', error);
+      return res.status(400).json({ error: error instanceof Error ? error.message : 'Could not prepare this upload.' });
+    }
+  });
+
+  app.post('/api/betadesk/tester/tickets', async (req, res) => {
+    const token = betaDeskTesterToken(req);
+    const subject = sanitizePlainText(req.body?.subject, 150);
+    const description = sanitizePlainText(req.body?.description, 5000);
+    const category = req.body?.category as BetaDeskCategory;
+    const platform = sanitizePlainText(req.body?.platform, 80);
+    const appVersion = sanitizePlainText(req.body?.appVersion, 80);
+    const deviceModel = sanitizePlainText(req.body?.deviceModel, 120);
+    const operatingSystem = sanitizePlainText(req.body?.operatingSystem, 120);
+    const projectId = sanitizePlainText(req.body?.projectId, 80);
+    const attachmentIds = req.body?.attachments;
+    const idempotencyHeader = req.get('Idempotency-Key') || '';
+    if (
+      !token
+      || subject.length < 3
+      || description.length < 10
+      || !projectId
+      || !Array.isArray(attachmentIds)
+      || attachmentIds.length > 8
+      || attachmentIds.some((id: unknown) => typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id))
+      || !betaDeskCategories.includes(category)
+      || !/^[A-Za-z0-9._:-]{8,128}$/.test(idempotencyHeader)
+    ) {
+      return res.status(400).json({ error: 'Complete the required fields with valid values and retry.' });
+    }
+
+    try {
+      const tester = await loadBetaDeskTesterByTokenHash(hashBetaDeskToken(token));
+      if (!tester) return res.status(404).json({ error: 'This tester link is invalid or revoked.' });
+      if (!tester.displayName) return res.status(409).json({ error: 'Save your name before submitting feedback.' });
+      const project = await loadBetaDeskProject(projectId);
+      if (!project?.active || project.id === 'legacy') {
+        return res.status(400).json({ error: 'Select an active beta-testing project.' });
+      }
+      if (!await consumeBetaDeskRateLimit(`tester_${tester.id}`, 10, 60 * 60 * 1000)) {
+        return res.status(429).json({ error: 'Too many submissions. Please try again later.' });
+      }
+
+      const uniqueAttachmentIds = [...new Set(attachmentIds as string[])];
+      if (uniqueAttachmentIds.length !== attachmentIds.length) {
+        return res.status(400).json({ error: 'An attachment was selected more than once.' });
+      }
+      const attachments = await Promise.all(uniqueAttachmentIds.map(async (uploadId) => {
+        const attachment = await verifyBetaDeskUploadGrant(tester.id, uploadId);
+        if (!attachment) throw new Error('An attachment is invalid, expired, or could not be verified.');
+        return attachment;
+      }));
+      if (attachments.reduce((total, attachment) => total + attachment.size, 0) > 100 * 1024 * 1024) {
+        return res.status(400).json({ error: 'Attachments cannot exceed 100 MB total per ticket.' });
+      }
+
+      const now = new Date().toISOString();
+      const result = await createBetaDeskTicket(
+        {
+          id: '',
+          projectId,
+          testerId: tester.id,
+          subject,
+          description,
+          category,
+          priority: 'Medium',
+          status: 'Open',
+          submitterName: tester.displayName,
+          platform,
+          appVersion,
+          deviceModel,
+          operatingSystem,
+          attachments,
+          assignedTo: '',
+          createdAt: now,
+          updatedAt: now,
+          lastActivityAt: now,
+        },
+        createHash('sha256').update(`${tester.id}\u0000${idempotencyHeader}`).digest('hex')
+      );
+
+      const adminEmails = new Set<string>();
+      if (ownerEmail) adminEmails.add(ownerEmail);
+      for (const admin of await loadBetaDeskAdmins()) {
+        if (admin.active) adminEmails.add(admin.email.toLowerCase());
+      }
+      const notificationResults = await Promise.all([...adminEmails].map((recipient) => recordBetaDeskEmail(
+        result.ticket.ticketNumber,
+        recipient,
+        'admin_new_ticket',
+        `New BetaDesk ticket ${result.ticket.ticketNumber}: ${subject}`,
+        `${tester.displayName} submitted a ${category}.\n\n${description}\n\nReview: ${process.env.PUBLIC_APP_URL || `https://${process.env.VERCEL_URL || 'localhost:3000'}`}/studio/beta-feedback`
+      )));
+      return res.status(result.duplicate ? 200 : 201).json({
+        ticket: result.ticket,
+        duplicate: result.duplicate,
+        notifications: notificationResults,
+      });
+    } catch (error) {
+      console.error('Failed to create BetaDesk ticket:', error);
+      return res.status(500).json({ error: 'Could not create the ticket. Please retry shortly.' });
+    }
+  });
+
+  app.get('/api/betadesk/tester/tickets/:ticketNumber', async (req, res) => {
+    const token = betaDeskTesterToken(req);
+    const ticketNumber = req.params.ticketNumber;
+    if (!token || !/^BETA-\d+$/.test(ticketNumber)) {
+      return res.status(404).json({ error: 'Ticket not found.' });
+    }
+    try {
+      const tester = await loadBetaDeskTesterByTokenHash(hashBetaDeskToken(token));
+      if (!tester) return res.status(404).json({ error: 'This tester link is invalid or revoked.' });
+      const ticket = await loadBetaDeskTicket(ticketNumber);
+      if (!ticket || ticket.testerId !== tester.id) return res.status(404).json({ error: 'Ticket not found.' });
+      const comments = await loadBetaDeskComments(ticketNumber, false);
+      return res.json({ ticket, comments });
+    } catch (error) {
+      console.error('Failed to load tester ticket details:', error);
+      return res.status(500).json({ error: 'Could not load this ticket.' });
+    }
+  });
+
+  app.get('/api/betadesk/tester/tickets/:ticketNumber/attachments/:uploadId', async (req, res) => {
+    const token = betaDeskTesterToken(req);
+    if (!token) return res.status(401).json({ error: 'Tester link required.' });
+    try {
+      const tester = await loadBetaDeskTesterByTokenHash(hashBetaDeskToken(token));
+      if (!tester) return res.status(404).json({ error: 'This tester link is invalid or revoked.' });
+      const url = await getBetaDeskAttachmentUrl(tester.id, req.params.ticketNumber, req.params.uploadId);
+      if (!url) return res.status(404).json({ error: 'Attachment not found.' });
+      return res.json({ url });
+    } catch (error) {
+      console.error('Failed to prepare tester attachment download:', error);
+      return res.status(500).json({ error: 'Could not access this attachment.' });
+    }
+  });
+
+  app.post('/api/betadesk/tester/tickets/:ticketNumber/comments', async (req, res) => {
+    const token = betaDeskTesterToken(req);
+    const ticketNumber = req.params.ticketNumber;
+    const message = sanitizePlainText(req.body?.message, 3000);
+    if (!token || !/^BETA-\d+$/.test(ticketNumber) || message.length < 2) {
+      return res.status(400).json({ error: 'Enter a message and use your tester link.' });
+    }
+    try {
+      const tester = await loadBetaDeskTesterByTokenHash(hashBetaDeskToken(token));
+      if (!tester) return res.status(404).json({ error: 'This tester link is invalid or revoked.' });
+      const ticket = await loadBetaDeskTicket(ticketNumber);
+      if (!ticket || ticket.testerId !== tester.id) return res.status(404).json({ error: 'Ticket not found.' });
+      if (ticket.status === 'Closed') return res.status(409).json({ error: 'This ticket is closed.' });
+      const comment = await addBetaDeskComment(ticketNumber, {
+        authorType: 'tester',
+        authorName: tester.displayName,
+        message,
+        visibility: 'public',
+      });
+      if (!comment) return res.status(404).json({ error: 'Ticket not found.' });
+
+      const adminEmails = new Set<string>();
+      if (ownerEmail) adminEmails.add(ownerEmail);
+      for (const admin of await loadBetaDeskAdmins()) {
+        if (admin.active) adminEmails.add(admin.email.toLowerCase());
+      }
+      const notificationResults = await Promise.all([...adminEmails].map((recipient) => recordBetaDeskEmail(
+        ticketNumber,
+        recipient,
+        'admin_new_ticket',
+        `Tester replied to ${ticketNumber}`,
+        `${tester.displayName} replied:\n\n${message}\n\nReview: ${process.env.PUBLIC_APP_URL || `https://${process.env.VERCEL_URL || 'localhost:3000'}`}/studio/beta-feedback`
+      )));
+      return res.status(201).json({ comment, notifications: notificationResults });
+    } catch (error) {
+      console.error('Failed to add tester comment:', error);
+      return res.status(500).json({ error: 'Could not send your reply.' });
+    }
+  });
+
+  app.get('/api/betadesk/admin/tickets', requireBetaDeskAdmin, async (_req, res) => {
+    try {
+      await loadBetaDeskProjects();
+      return res.json(await loadBetaDeskTickets());
+    } catch (error) {
+      console.error('Failed to load BetaDesk tickets:', error);
+      return res.status(500).json({ error: 'Could not load tickets.' });
+    }
+  });
+
+  app.get('/api/betadesk/admin/tickets/:ticketNumber', requireBetaDeskAdmin, async (req, res) => {
+    const ticketNumber = req.params.ticketNumber;
+    if (!/^BETA-\d+$/.test(ticketNumber)) return res.status(400).json({ error: 'Invalid ticket reference.' });
+    try {
+      const ticket = await loadBetaDeskTicket(ticketNumber);
+      if (!ticket) return res.status(404).json({ error: 'Ticket not found.' });
+      const comments = await loadBetaDeskComments(ticketNumber, true);
+      return res.json({ ticket, comments });
+    } catch (error) {
+      console.error('Failed to load BetaDesk ticket details:', error);
+      return res.status(500).json({ error: 'Could not load ticket details.' });
+    }
+  });
+
+  app.get('/api/betadesk/admin/tickets/:ticketNumber/attachments/:uploadId', requireBetaDeskAdmin, async (req, res) => {
+    try {
+      const ticket = await loadBetaDeskTicket(req.params.ticketNumber);
+      if (!ticket || !ticket.attachments?.some((attachment) => attachment.uploadId === req.params.uploadId)) {
+        return res.status(404).json({ error: 'Attachment not found.' });
+      }
+      const url = await getBetaDeskAttachmentUrl(ticket.testerId, ticket.ticketNumber, req.params.uploadId);
+      if (!url) return res.status(404).json({ error: 'Attachment not found.' });
+      return res.json({ url });
+    } catch (error) {
+      console.error('Failed to prepare BetaDesk admin attachment download:', error);
+      return res.status(500).json({ error: 'Could not access this attachment.' });
+    }
+  });
+
+  app.patch('/api/betadesk/admin/tickets/:ticketNumber', requireBetaDeskAdmin, async (req, res) => {
+    const ticketNumber = req.params.ticketNumber;
+    const { status, priority, assignedTo, projectId } = req.body || {};
+    let normalizedAssignee: string | undefined;
+    if (typeof assignedTo === 'string' && assignedTo.trim()) {
+      const assignee = sanitizeEmail(assignedTo);
+      if (!assignee.isValid) return res.status(400).json({ error: 'Assignment must be an administrator email.' });
+      normalizedAssignee = assignee.email;
+    } else if (typeof assignedTo === 'string') {
+      normalizedAssignee = '';
+    }
+    if (
+      !/^BETA-\d+$/.test(ticketNumber)
+      || (status !== undefined && !betaDeskStatuses.includes(status))
+      || (priority !== undefined && !betaDeskPriorities.includes(priority))
+      || (assignedTo !== undefined && (typeof assignedTo !== 'string' || assignedTo.length > 254))
+      || (projectId !== undefined && (typeof projectId !== 'string' || !projectId || projectId.length > 80))
+      || (status === undefined && priority === undefined && assignedTo === undefined && projectId === undefined)
+    ) {
+      return res.status(400).json({ error: 'Provide valid ticket changes.' });
+    }
+    try {
+      if (normalizedAssignee) {
+        const isOwner = normalizedAssignee === ownerEmail;
+        const betaDeskAdmin = isOwner ? null : await loadBetaDeskAdmin(normalizedAssignee);
+        if (!isOwner && !betaDeskAdmin?.active) {
+          return res.status(400).json({ error: 'Tickets can only be assigned to an active BetaDesk administrator.' });
+        }
+      }
+      if (projectId !== undefined) {
+        const project = await loadBetaDeskProject(projectId);
+        if (!project?.active) return res.status(400).json({ error: 'Choose an active project.' });
+      }
+      const ticket = await updateBetaDeskTicket(
+        ticketNumber,
+        {
+          ...(status !== undefined ? { status } : {}),
+          ...(priority !== undefined ? { priority } : {}),
+          ...(normalizedAssignee !== undefined ? { assignedTo: normalizedAssignee } : {}),
+          ...(projectId !== undefined ? { projectId } : {}),
+        },
+        res.locals.studioEmail || 'Studio admin'
+      );
+      if (!ticket) return res.status(404).json({ error: 'Ticket not found.' });
+      return res.json(ticket);
+    } catch (error) {
+      console.error('Failed to update BetaDesk ticket:', error);
+      return res.status(500).json({ error: 'Could not update this ticket.' });
+    }
+  });
+
+  app.post('/api/betadesk/admin/tickets/:ticketNumber/comments', requireBetaDeskAdmin, async (req, res) => {
+    const ticketNumber = req.params.ticketNumber;
+    const message = sanitizePlainText(req.body?.message, 3000);
+    const visibility = req.body?.visibility;
+    if (!/^BETA-\d+$/.test(ticketNumber) || message.length < 2 || !['public', 'internal'].includes(visibility)) {
+      return res.status(400).json({ error: 'Enter a message and choose a valid visibility.' });
+    }
+    try {
+      const ticket = await loadBetaDeskTicket(ticketNumber);
+      if (!ticket) return res.status(404).json({ error: 'Ticket not found.' });
+      const comment = await addBetaDeskComment(ticketNumber, {
+        authorType: 'admin',
+        authorName: res.locals.studioEmail || 'Studio admin',
+        message,
+        visibility,
+      });
+      if (!comment) return res.status(404).json({ error: 'Ticket not found.' });
+
+      return res.status(201).json(comment);
+    } catch (error) {
+      console.error('Failed to add BetaDesk admin comment:', error);
+      return res.status(500).json({ error: 'Could not add this reply.' });
+    }
+  });
 
   app.get('/api/studio/access', async (req, res) => {
     const identity = await verifyStudioIdentity(req, res);

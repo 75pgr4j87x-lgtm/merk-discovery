@@ -137,6 +137,71 @@ button {
   color: #D9A441;
 }
 
+.betadesk-theme[data-theme="dark"] {
+  background-color: #151812;
+  color: #edf2e8;
+}
+
+.betadesk-theme[data-theme="dark"] .bg-white,
+.betadesk-theme[data-theme="dark"] [class*="bg-white/"],
+.betadesk-theme[data-theme="dark"] [class*="bg-[#FAF6F1]"],
+.betadesk-theme[data-theme="dark"] [class*="bg-[#FAFBF8]"],
+.betadesk-theme[data-theme="dark"] [class*="bg-[#F7F8F"],
+.betadesk-theme[data-theme="dark"] [class*="bg-[#F2F3ED]"],
+.betadesk-theme[data-theme="dark"] [class*="bg-[#F4F5F1]"] {
+  background-color: #20251f !important;
+}
+
+.betadesk-theme[data-theme="dark"] [class*="bg-[#F0F1EB]"] {
+  background-color: #30372e !important;
+}
+
+.betadesk-theme[data-theme="dark"] [class*="text-[#3F4A32]"],
+.betadesk-theme[data-theme="dark"] [class*="text-[#343D29]"] {
+  color: #edf2e8 !important;
+}
+
+.betadesk-theme[data-theme="dark"] h1,
+.betadesk-theme[data-theme="dark"] h2,
+.betadesk-theme[data-theme="dark"] h3,
+.betadesk-theme[data-theme="dark"] h4,
+.betadesk-theme[data-theme="dark"] h5,
+.betadesk-theme[data-theme="dark"] h6 {
+  color: #edf2e8 !important;
+}
+
+.betadesk-theme[data-theme="dark"] [class*="text-[#69745E]"],
+.betadesk-theme[data-theme="dark"] [class*="text-[#76806B]"],
+.betadesk-theme[data-theme="dark"] [class*="text-[#8A9380]"],
+.betadesk-theme[data-theme="dark"] [class*="text-[#9AA18E]"] {
+  color: #bbc5b1 !important;
+}
+
+.betadesk-theme[data-theme="dark"] [class*="border-[#E5EADF]"],
+.betadesk-theme[data-theme="dark"] [class*="border-[#F0F1EB]"] {
+  border-color: #3a4337 !important;
+}
+
+.betadesk-theme[data-theme="dark"] input,
+.betadesk-theme[data-theme="dark"] textarea,
+.betadesk-theme[data-theme="dark"] select {
+  background-color: #20251f;
+  color: #edf2e8;
+}
+
+.betadesk-theme[data-theme="dark"] input::placeholder,
+.betadesk-theme[data-theme="dark"] textarea::placeholder {
+  color: #9aa692;
+}
+
+.betadesk-theme[data-theme="dark"] table thead {
+  background-color: #252b23;
+}
+
+.betadesk-theme[data-theme="dark"] tr:hover {
+  background-color: #293027;
+}
+
 /* Google Sign-in button standard styles */
 .gsi-material-button {
   -moz-user-select: none;

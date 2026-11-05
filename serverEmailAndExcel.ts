@@ -53,6 +53,52 @@ export interface OutboxEntry {
   error?: string;
 }
 
+export async function sendBetaDeskEmail(options: {
+  recipient: string;
+  subject: string;
+  text: string;
+}): Promise<'sent' | 'recorded'> {
+  const { recipient, subject, text } = options;
+  const smtpHost = process.env.SMTP_HOST;
+  const smtpUser = process.env.SMTP_USER;
+  const smtpPass = process.env.SMTP_PASS;
+
+  if (!smtpHost || !smtpUser || !smtpPass) {
+    console.warn(`[BETADESK EMAIL] SMTP is not configured; notification for ${recipient} was not sent.`);
+    return 'recorded';
+  }
+
+  const transporter = nodemailer.createTransport({
+    host: smtpHost,
+    port: Number(process.env.SMTP_PORT) || 587,
+    secure: process.env.SMTP_SECURE === 'true',
+    auth: { user: smtpUser, pass: smtpPass },
+  });
+  let info: { messageId?: string } | undefined;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      info = await new Promise<{ messageId?: string }>((resolve, reject) => {
+        transporter.sendMail({
+          from: `"Merakifos BetaDesk" <${process.env.SMTP_FROM || smtpUser}>`,
+          to: recipient,
+          subject,
+          text,
+        }, (error, result) => {
+          if (error) reject(error);
+          else resolve(result);
+        });
+      });
+      break;
+    } catch (error) {
+      if (attempt === 1) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 750));
+    }
+  }
+  if (!info) throw new Error('SMTP delivery did not return a message result.');
+  console.log(`[BETADESK EMAIL] Sent notification to ${recipient} (MessageId: ${info.messageId || 'unknown'}).`);
+  return 'sent';
+}
+
 export const DEFAULT_FOUNDER_EMAIL = process.env.STUDIO_OWNER_EMAIL || '';
 
 /**
@@ -487,5 +533,3 @@ export async function sendBriefCopyEmail(options: {
     entry: outboxEntry,
   };
 }
-
-

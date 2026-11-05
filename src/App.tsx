@@ -6,6 +6,8 @@ import { INITIAL_ANSWERS } from './data/discoveryQuestions';
 import { DiscoveryAnswers } from './types/questionnaire';
 import { generateProjectBrief } from './services/briefGenerator';
 import { ClientProjectView } from './components/ClientProjectView';
+import { BetaDeskAdmin } from './components/beta-desk/BetaDesk';
+import { TesterLinkRequired, TesterPortal } from './components/beta-desk/TesterPortal';
 
 export default function App() {
   const [answers, setAnswers] = React.useState<DiscoveryAnswers>(INITIAL_ANSWERS);
@@ -15,6 +17,7 @@ export default function App() {
     ? new URLSearchParams(window.location.hash.slice(1)).get('project')
       || new URLSearchParams(window.location.search).get('project')
     : null;
+  const pathname = typeof window !== 'undefined' ? window.location.pathname : '/';
 
   // Callback to synthesize brief
   const handleCompleteAndSynthesize = async (latestAnswers?: DiscoveryAnswers): Promise<string> => {
@@ -43,6 +46,19 @@ export default function App() {
     }
     return { success: false };
   };
+
+  if (pathname === '/studio/beta-feedback' || pathname.startsWith('/studio/beta-feedback/')) {
+    return <BetaDeskAdmin />;
+  }
+
+  if (pathname === '/feedback/submit') {
+    return <TesterLinkRequired />;
+  }
+
+  if (pathname === '/feedback/tester') {
+    const testerToken = new URLSearchParams(window.location.hash.slice(1)).get('tester') || '';
+    return testerToken ? <TesterPortal testerToken={testerToken} /> : <TesterLinkRequired />;
+  }
 
   // 1. RENDER: Studio Portal Application (Founder Operating System - Restricted to Keven Sarbah)
   if (isStudioRoute) {
