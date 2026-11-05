@@ -234,10 +234,6 @@ function getBetaDeskUploadGrantsCollection() {
   return getFirestore(getFirebaseApp()).collection('betaDeskUploadGrants');
 }
 
-function getBetaDeskSettingsCollection() {
-  return getFirestore(getFirebaseApp()).collection('betaDeskSettings');
-}
-
 function getBetaDeskDriveConnectionsCollection() {
   return getFirestore(getFirebaseApp()).collection('betaDeskDriveConnections');
 }
@@ -297,33 +293,6 @@ function decryptBetaDeskToken(value: string): string {
   ]).toString('utf8');
 }
 
-export async function loadBetaDeskSettings(initialSuperAdminEmail: string): Promise<{
-  superAdminEmail: string;
-}> {
-  const settingsRef = getBetaDeskSettingsCollection().doc('general');
-  const document = await settingsRef.get();
-  if (document.exists) {
-    return document.data() as { superAdminEmail: string };
-  }
-  const settings = { superAdminEmail: initialSuperAdminEmail.trim().toLowerCase() };
-  if (!settings.superAdminEmail) throw new Error('Studio owner is not configured to bootstrap BetaDesk access.');
-  try {
-    await settingsRef.create(settings);
-    return settings;
-  } catch (error) {
-    const concurrent = await settingsRef.get();
-    if (concurrent.exists) return concurrent.data() as { superAdminEmail: string };
-    throw error;
-  }
-}
-
-export async function changeBetaDeskSuperAdmin(email: string): Promise<void> {
-  await getBetaDeskSettingsCollection().doc('general').set({
-    superAdminEmail: email.trim().toLowerCase(),
-    updatedAt: new Date().toISOString(),
-  }, { merge: true });
-}
-
 export async function saveBetaDeskDriveOAuthState(
   state: string,
   email: string,
@@ -369,10 +338,15 @@ export async function createBetaDeskDriveAuthorizationUrl(
 
 export async function completeBetaDeskDriveAuthorization(
   code: string,
-  state: string
+  state: string,
+  expectedOwnerEmail: string
 ): Promise<{ email: string; folderName: string }> {
   const oauthState = await consumeBetaDeskDriveOAuthState(state);
   if (!oauthState) throw new Error('This Google Drive authorization request expired. Start again from BetaDesk.');
+  const expectedEmail = expectedOwnerEmail.trim().toLowerCase();
+  if (!expectedEmail || oauthState.email !== expectedEmail) {
+    throw new Error('The Studio Super Admin changed during authorization. Start again from Studio.');
+  }
 
   const oauth = getBetaDeskOAuthClient();
   const { tokens } = await oauth.getToken(code);
@@ -383,7 +357,7 @@ export async function completeBetaDeskDriveAuthorization(
   });
   const email = profile.data.email?.trim().toLowerCase() || '';
   if (!email || profile.data.verified_email === false || email !== oauthState.email) {
-    throw new Error('Authorize Google Drive with the designated Super BetaDesk Admin account.');
+    throw new Error('Authorize Google Drive with the Studio Super Admin account.');
   }
 
   const connectionRef = getBetaDeskDriveConnectionsCollection().doc(email);
@@ -457,7 +431,7 @@ async function betaDeskDriveRequest(
 async function betaDeskDriveError(response: Response, action: string): Promise<Error> {
   const message = (await response.text()).slice(0, 1000);
   console.error(`Google Drive ${action} failed (${response.status}):`, message);
-  return new Error(`Google Drive could not ${action}. Check that the Drive API is enabled and the BetaDesk Super Admin has connected their Google Drive.`);
+  return new Error(`Google Drive could not ${action}. Check that the Drive API is enabled and the Studio Super Admin has connected Google Drive.`);
 }
 
 interface BetaDeskDriveFile {
@@ -540,10 +514,10 @@ export async function createBetaDeskUploadGrant(
     throw new Error('Unsupported file type or size limit exceeded.');
   }
 
-  const settings = await loadBetaDeskSettings(process.env.STUDIO_OWNER_EMAIL || '');
-  const driveOwnerEmail = settings.superAdminEmail;
+  const driveOwnerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || '';
+  if (!driveOwnerEmail) throw new Error('STUDIO_OWNER_EMAIL is not configured.');
   const driveFolderId = await loadBetaDeskDriveFolderId(driveOwnerEmail);
-  if (!driveFolderId) throw new Error('Google Drive is not connected for the Super BetaDesk Admin.');
+  if (!driveFolderId) throw new Error('Google Drive is not connected for the Studio Super Admin.');
   const uploadId = randomUUID();
   const createdAt = new Date().toISOString();
   const grant: BetaDeskUploadGrant = {

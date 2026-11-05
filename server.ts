@@ -22,7 +22,6 @@ import {
   createBetaDeskUploadGrant,
   completeBetaDeskUploadGrant,
   completeBetaDeskDriveAuthorization,
-  changeBetaDeskSuperAdmin,
   createBetaDeskDriveAuthorizationUrl,
   getBetaDeskAttachmentChunk,
   getStudioAuth,
@@ -37,7 +36,6 @@ import {
   loadBetaDeskTicketsForTester,
   loadBetaDeskTesterByTokenHash,
   loadBetaDeskTesters,
-  loadBetaDeskSettings,
   loadStudioInvite,
   findProjectByShareTokenHash,
   loadStudioInvites,
@@ -104,7 +102,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
       }
       const isOwner = Boolean(ownerEmail && email === ownerEmail);
       const invite = isOwner ? null : await loadStudioInvite(email);
-      return { isOwner, role: isOwner ? 'super_admin' as const : invite?.role || null, email };
+      return { isOwner, role: isOwner ? 'super_admin' as const : invite?.role || null, email, uid: decodedToken.uid };
     } catch {
       res.status(401).json({ error: 'Invalid or expired studio sign-in.' });
       return null;
@@ -146,81 +144,41 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
   };
 
   const verifyBetaDeskIdentity = async (req: express.Request, res: express.Response) => {
-    const authorization = req.get('authorization') || '';
-    const token = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
-    if (!token) {
-      res.status(401).json({ error: 'BetaDesk sign-in required.' });
-      return null;
-    }
-    try {
-      const decodedToken = await getStudioAuth().verifyIdToken(token);
-      const email = (decodedToken.email || '').trim().toLowerCase();
-      if (!email || !decodedToken.email_verified || decodedToken.firebase?.sign_in_provider !== 'google.com') {
-        res.status(403).json({ error: 'A verified Google email is required for BetaDesk administration.' });
-        return null;
-      }
-      const isStudioOwner = Boolean(ownerEmail && email === ownerEmail);
-      const studioInvite = isStudioOwner ? null : await loadStudioInvite(email);
-      const isStudioAdmin = isStudioOwner || studioInvite?.role === 'admin';
-      let isSuperAdmin = false;
-      try {
-        const settings = await loadBetaDeskSettings(ownerEmail || '');
-        isSuperAdmin = email === settings.superAdminEmail;
-      } catch (error) {
-        if (!isStudioOwner) throw error;
-        console.error('Could not load BetaDesk settings for the Studio owner:', error);
-      }
-      const betaAdmin = isSuperAdmin ? null : await loadBetaDeskAdmin(email);
-      return {
-        email,
-        uid: decodedToken.uid,
-        isSuperAdmin,
-        isStudioOwner,
-        isStudioAdmin,
-        isBetaDeskAdmin: Boolean(betaAdmin?.active),
-      };
-    } catch {
-      res.status(401).json({ error: 'Invalid or expired BetaDesk sign-in.' });
-      return null;
-    }
+    const identity = await verifyStudioIdentity(req, res);
+    if (!identity) return null;
+    const betaAdmin = await loadBetaDeskAdmin(identity.email);
+    const isStudioAdmin = identity.isOwner || identity.role === 'admin';
+    return {
+      email: identity.email,
+      uid: identity.uid,
+      isStudioSuperAdmin: identity.isOwner,
+      isStudioAdmin,
+      isBetaDeskAdmin: Boolean(betaAdmin?.active),
+    };
   };
 
   const requireBetaDeskAdmin: express.RequestHandler = async (req, res, next) => {
     const identity = await verifyBetaDeskIdentity(req, res);
     if (!identity) return;
-    if (!identity.isSuperAdmin && !identity.isStudioAdmin && !identity.isBetaDeskAdmin) {
+    if (!identity.isStudioSuperAdmin && !identity.isStudioAdmin && !identity.isBetaDeskAdmin) {
       res.status(403).json({ error: 'This Google account has not been granted BetaDesk admin access.' });
       return;
     }
     res.locals.betaDeskEmail = identity.email;
     res.locals.studioEmail = identity.email;
     res.locals.betaDeskUid = identity.uid;
-    res.locals.canManageBetaDeskAdmins = identity.isSuperAdmin || identity.isStudioOwner;
-    res.locals.isBetaDeskSuperAdmin = identity.isSuperAdmin;
-    res.locals.isStudioOwner = identity.isStudioOwner;
     next();
   };
 
-  const requireBetaDeskOwner: express.RequestHandler = async (req, res, next) => {
+  const requireStudioSuperAdmin: express.RequestHandler = async (req, res, next) => {
     const identity = await verifyBetaDeskIdentity(req, res);
     if (!identity) return;
-    if (!identity.isSuperAdmin) {
-      res.status(403).json({ error: 'Only the Super BetaDesk Admin can manage BetaDesk administrator access.' });
+    if (!identity.isStudioSuperAdmin) {
+      res.status(403).json({ error: 'Only the Studio Super Admin can connect Google Drive for BetaDesk.' });
       return;
     }
     res.locals.betaDeskEmail = identity.email;
     res.locals.betaDeskUid = identity.uid;
-    next();
-  };
-
-  const requireBetaDeskRoleManager: express.RequestHandler = async (req, res, next) => {
-    const identity = await verifyBetaDeskIdentity(req, res);
-    if (!identity) return;
-    if (!identity.isSuperAdmin && !identity.isStudioOwner) {
-      res.status(403).json({ error: 'Only the Studio owner or Super BetaDesk Admin can manage BetaDesk roles.' });
-      return;
-    }
-    res.locals.betaDeskEmail = identity.email;
     next();
   };
 
@@ -309,55 +267,13 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     const identity = await verifyBetaDeskIdentity(req, res);
     if (!identity) return;
     return res.json({
-      allowed: identity.isSuperAdmin || identity.isStudioAdmin || identity.isBetaDeskAdmin,
-      canManageAdmins: identity.isSuperAdmin || identity.isStudioOwner,
+      allowed: identity.isStudioAdmin || identity.isBetaDeskAdmin,
+      canManageAdmins: false,
       email: identity.email,
     });
   });
 
-  app.get('/api/betadesk/admin/admins', requireBetaDeskAdmin, async (_req, res) => {
-    try {
-      return res.json({
-        admins: await loadBetaDeskAdmins(),
-        canManageAdmins: Boolean(res.locals.canManageBetaDeskAdmins),
-      });
-    } catch (error) {
-      console.error('Failed to load BetaDesk admins:', error);
-      return res.status(500).json({ error: 'Could not load BetaDesk admin access.' });
-    }
-  });
-
-  app.get('/api/betadesk/admin/settings', requireBetaDeskAdmin, async (_req, res) => {
-    try {
-      const settings = await loadBetaDeskSettings(ownerEmail || '');
-      return res.json({
-        superAdminEmail: settings.superAdminEmail,
-        driveConnected: await loadBetaDeskDriveConnectionStatus(settings.superAdminEmail),
-        canManageSettings: Boolean(res.locals.isBetaDeskSuperAdmin),
-      });
-    } catch (error) {
-      console.error('Failed to load BetaDesk settings:', error);
-      return res.status(500).json({ error: 'Could not load BetaDesk settings.' });
-    }
-  });
-
-  app.post('/api/betadesk/admin/super-admin', requireBetaDeskOwner, async (req, res) => {
-    const { isValid, email } = sanitizeEmail(req.body?.email);
-    if (!isValid) return res.status(400).json({ error: 'Enter a valid Google account email address.' });
-    try {
-      const settings = await loadBetaDeskSettings(ownerEmail || '');
-      if (settings.superAdminEmail !== email) {
-        await saveBetaDeskAdmin(settings.superAdminEmail, res.locals.betaDeskEmail || 'Super BetaDesk Admin');
-        await changeBetaDeskSuperAdmin(email);
-      }
-      return res.json({ superAdminEmail: email });
-    } catch (error) {
-      console.error('Failed to update the Super BetaDesk Admin:', error);
-      return res.status(500).json({ error: 'Could not update the Super BetaDesk Admin.' });
-    }
-  });
-
-  app.post('/api/betadesk/admin/drive/connect', requireBetaDeskOwner, async (_req, res) => {
+  app.post('/api/betadesk/admin/drive/connect', requireStudioSuperAdmin, async (_req, res) => {
     try {
       const authorizationUrl = await createBetaDeskDriveAuthorizationUrl(
         res.locals.betaDeskEmail,
@@ -379,51 +295,20 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     const appBase = process.env.PUBLIC_APP_URL
       || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : localBase);
     if (!appBase) return res.status(503).send('BetaDesk callback URL is not configured.');
-    const settingsUrl = new URL('/studio/beta-feedback', appBase);
+    const settingsUrl = new URL('/studio', appBase);
     if (providerError || !code || !state) {
       settingsUrl.searchParams.set('drive', 'error');
       return res.redirect(settingsUrl.toString());
     }
     try {
-      const result = await completeBetaDeskDriveAuthorization(code, state);
-      const settings = await loadBetaDeskSettings(ownerEmail || '');
-      if (result.email !== settings.superAdminEmail) {
-        throw new Error('The Super BetaDesk Admin changed during authorization. Start the connection again.');
-      }
+      const result = await completeBetaDeskDriveAuthorization(code, state, ownerEmail || '');
+      if (result.email !== ownerEmail) throw new Error('Drive authorization must use the Studio Super Admin account.');
       settingsUrl.searchParams.set('drive', 'connected');
       return res.redirect(settingsUrl.toString());
     } catch (error) {
       console.error('BetaDesk Google Drive authorization failed:', error);
       settingsUrl.searchParams.set('drive', 'error');
       return res.redirect(settingsUrl.toString());
-    }
-  });
-
-  app.post('/api/betadesk/admin/admins', requireBetaDeskRoleManager, async (req, res) => {
-    const { isValid, email } = sanitizeEmail(req.body?.email);
-    if (!isValid) return res.status(400).json({ error: 'Enter a valid Google account email address.' });
-    try {
-      const settings = await loadBetaDeskSettings(ownerEmail || '');
-      if (email === settings.superAdminEmail) return res.status(400).json({ error: 'The Super BetaDesk Admin already has BetaDesk access.' });
-      await saveBetaDeskAdmin(email, res.locals.betaDeskEmail || 'Super BetaDesk Admin');
-      return res.status(201).json({ email, active: true });
-    } catch (error) {
-      console.error('Failed to grant BetaDesk admin access:', error);
-      return res.status(500).json({ error: 'Could not grant BetaDesk admin access.' });
-    }
-  });
-
-  app.delete('/api/betadesk/admin/admins/:email', requireBetaDeskRoleManager, async (req, res) => {
-    const { isValid, email } = sanitizeEmail(req.params.email);
-    if (!isValid) return res.status(400).json({ error: 'Invalid administrator email address.' });
-    const settings = await loadBetaDeskSettings(ownerEmail || '');
-    if (email === settings.superAdminEmail) return res.status(400).json({ error: 'The Super BetaDesk Admin cannot be removed here.' });
-    try {
-      await removeBetaDeskAdmin(email);
-      return res.json({ success: true });
-    } catch (error) {
-      console.error('Failed to remove BetaDesk admin access:', error);
-      return res.status(500).json({ error: 'Could not remove BetaDesk admin access.' });
     }
   });
 
@@ -853,10 +738,12 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     }
     try {
       if (normalizedAssignee) {
-        const settings = await loadBetaDeskSettings(ownerEmail || '');
-        const isSuperAdmin = normalizedAssignee === settings.superAdminEmail;
-        const betaDeskAdmin = isSuperAdmin ? null : await loadBetaDeskAdmin(normalizedAssignee);
-        if (!isSuperAdmin && !betaDeskAdmin?.active) {
+        const [studioInvite, betaDeskAdmin] = await Promise.all([
+          loadStudioInvite(normalizedAssignee),
+          loadBetaDeskAdmin(normalizedAssignee),
+        ]);
+        const isStudioAdmin = normalizedAssignee === ownerEmail || studioInvite?.role === 'admin';
+        if (!isStudioAdmin && !betaDeskAdmin?.active) {
           return res.status(400).json({ error: 'Tickets can only be assigned to an active BetaDesk administrator.' });
         }
       }
@@ -915,10 +802,10 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
 
   app.get('/api/studio/betadesk/admins', requireStudioOwnerAccess, async (_req, res) => {
     try {
-      const settings = await loadBetaDeskSettings(ownerEmail || '');
       return res.json({
         admins: await loadBetaDeskAdmins(),
-        superAdminEmail: settings.superAdminEmail,
+        superAdminEmail: ownerEmail || '',
+        driveConnected: ownerEmail ? await loadBetaDeskDriveConnectionStatus(ownerEmail) : false,
       });
     } catch (error) {
       console.error('Failed to load Studio BetaDesk roles:', error);
@@ -930,9 +817,8 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     const { isValid, email } = sanitizeEmail(req.body?.email);
     if (!isValid) return res.status(400).json({ error: 'Enter a valid Google account email address.' });
     try {
-      const settings = await loadBetaDeskSettings(ownerEmail || '');
-      if (email === settings.superAdminEmail) {
-        return res.status(400).json({ error: 'The Super BetaDesk Admin already has BetaDesk access.' });
+      if (email === ownerEmail) {
+        return res.status(400).json({ error: 'The Studio Super Admin already has BetaDesk access.' });
       }
       await saveBetaDeskAdmin(email, res.locals.studioEmail || 'Studio owner');
       return res.status(201).json({ email, active: true });
@@ -946,9 +832,8 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     const { isValid, email } = sanitizeEmail(req.params.email);
     if (!isValid) return res.status(400).json({ error: 'Invalid administrator email address.' });
     try {
-      const settings = await loadBetaDeskSettings(ownerEmail || '');
-      if (email === settings.superAdminEmail) {
-        return res.status(400).json({ error: 'The Super BetaDesk Admin cannot be removed here.' });
+      if (email === ownerEmail) {
+        return res.status(400).json({ error: 'The Studio Super Admin cannot be removed here.' });
       }
       await removeBetaDeskAdmin(email);
       return res.json({ success: true });

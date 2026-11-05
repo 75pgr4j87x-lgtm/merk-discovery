@@ -202,6 +202,81 @@ button {
   background-color: #293027;
 }
 
+.studio-theme[data-theme="dark"] {
+  background-color: #151812;
+  color: #edf2e8;
+}
+
+.studio-theme[data-theme="dark"] .bg-white,
+.studio-theme[data-theme="dark"] [class*="bg-white/"],
+.studio-theme[data-theme="dark"] [class*="bg-[#FAF6F1]"],
+.studio-theme[data-theme="dark"] [class*="bg-[#FAFBF8]"],
+.studio-theme[data-theme="dark"] [class*="bg-[#F1F2EC]"],
+.studio-theme[data-theme="dark"] [class*="bg-[#F2F3ED]"] {
+  background-color: #20251f !important;
+}
+
+.studio-theme[data-theme="dark"] [class*="text-[#3F4A32]"],
+.studio-theme[data-theme="dark"] [class*="text-[#25312B]"],
+.studio-theme[data-theme="dark"] h1,
+.studio-theme[data-theme="dark"] h2,
+.studio-theme[data-theme="dark"] h3,
+.studio-theme[data-theme="dark"] h4,
+.studio-theme[data-theme="dark"] h5,
+.studio-theme[data-theme="dark"] h6 {
+  color: #edf2e8 !important;
+}
+
+.studio-theme[data-theme="dark"] [class*="text-[#7C8B5F]"],
+.studio-theme[data-theme="dark"] [class*="text-[#6F786F]"],
+.studio-theme[data-theme="dark"] [class*="text-[#69736A]"],
+.studio-theme[data-theme="dark"] [class*="text-[#59645B]"],
+.studio-theme[data-theme="dark"] [class*="text-stone-500"],
+.studio-theme[data-theme="dark"] [class*="text-stone-600"] {
+  color: #bbc5b1 !important;
+}
+
+.studio-theme[data-theme="dark"] [class*="border-[#E5EADF]"],
+.studio-theme[data-theme="dark"] [class*="border-[#D9DED7]"],
+.studio-theme[data-theme="dark"] [class*="border-stone-100"],
+.studio-theme[data-theme="dark"] [class*="border-stone-200"] {
+  border-color: #3a4337 !important;
+}
+
+.studio-theme[data-theme="dark"] input,
+.studio-theme[data-theme="dark"] textarea,
+.studio-theme[data-theme="dark"] select {
+  background-color: #20251f;
+  color: #edf2e8;
+}
+
+.studio-theme[data-theme="dark"] input::placeholder,
+.studio-theme[data-theme="dark"] textarea::placeholder {
+  color: #9aa692;
+}
+
+.studio-theme[data-theme="dark"] table thead {
+  background-color: #252b23;
+}
+
+.studio-theme[data-theme="dark"] tbody tr:hover {
+  background-color: #293027;
+}
+
+.studio-theme[data-theme="dark"] .merakifos-studio-workspace {
+  background-color: #151812;
+}
+
+@media (max-width: 640px) {
+  .studio-theme header.sticky {
+    position: relative;
+  }
+
+  .merakifos-studio-workspace header {
+    align-items: flex-start;
+  }
+}
+
 /* Google Sign-in button standard styles */
 .gsi-material-button {
   -moz-user-select: none;

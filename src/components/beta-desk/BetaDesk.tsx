@@ -18,8 +18,6 @@ import {
   Ticket,
   Paperclip,
   FolderPlus,
-  UserPlus,
-  Trash2,
 } from 'lucide-react';
 import { GoogleSignInButton } from '../GoogleSignInButton';
 import { initAuth, studioFetch } from '../../services/auth';
@@ -89,19 +87,6 @@ interface BetaTester {
   ticketCount: number;
 }
 
-interface BetaAdmin {
-  email: string;
-  active: boolean;
-  invitedBy: string;
-  createdAt: string;
-}
-
-interface BetaDeskSettings {
-  superAdminEmail: string;
-  driveConnected: boolean;
-  canManageSettings: boolean;
-}
-
 interface BetaComment {
   id: string;
   authorType: 'tester' | 'admin';
@@ -169,11 +154,8 @@ export const BetaDeskAdmin: React.FC = () => {
   const { theme, toggle: toggleTheme } = useBetaDeskTheme();
   const [user, setUser] = React.useState<User | null>(null);
   const [access, setAccess] = React.useState<'checking' | 'allowed' | 'denied'>('checking');
-  const [canManageAdmins, setCanManageAdmins] = React.useState(false);
-  const [betaDeskSettings, setBetaDeskSettings] = React.useState<BetaDeskSettings | null>(null);
   const [tickets, setTickets] = React.useState<BetaTicket[]>([]);
   const [projects, setProjects] = React.useState<BetaProject[]>([]);
-  const [admins, setAdmins] = React.useState<BetaAdmin[]>([]);
   const [testers, setTesters] = React.useState<BetaTester[]>([]);
   const [newTesterUrl, setNewTesterUrl] = React.useState('');
   const [creatingTester, setCreatingTester] = React.useState(false);
@@ -198,18 +180,11 @@ export const BetaDeskAdmin: React.FC = () => {
   const [newProjectName, setNewProjectName] = React.useState('');
   const [newProjectDescription, setNewProjectDescription] = React.useState('');
   const [creatingProject, setCreatingProject] = React.useState(false);
-  const [inviteEmail, setInviteEmail] = React.useState('');
-  const [adminError, setAdminError] = React.useState('');
-  const [managingAdmin, setManagingAdmin] = React.useState(false);
-  const [newSuperAdminEmail, setNewSuperAdminEmail] = React.useState('');
-  const [savingSuperAdmin, setSavingSuperAdmin] = React.useState(false);
-  const [connectingDrive, setConnectingDrive] = React.useState(false);
-  const [settingsError, setSettingsError] = React.useState('');
   const pageSize = 12;
 
   React.useEffect(() => {
     if (new URLSearchParams(window.location.search).get('drive') === 'error') {
-      setSettingsError('Google Drive could not be connected. Confirm the current Super BetaDesk Admin account and OAuth configuration, then try again.');
+      setError('Google Drive could not be connected. Configure it from Studio access settings, then try again.');
     }
   }, []);
 
@@ -222,24 +197,14 @@ export const BetaDeskAdmin: React.FC = () => {
       const data = await response.json() as BetaTicket[];
       setTickets(data);
       setSelectedNumber((current) => current || data[0]?.ticketNumber || '');
-      const [projectsResponse, testersResponse, adminsResponse, settingsResponse] = await Promise.all([
+      const [projectsResponse, testersResponse] = await Promise.all([
         studioFetch('/api/betadesk/admin/projects'),
         studioFetch('/api/betadesk/admin/testers'),
-        studioFetch('/api/betadesk/admin/admins'),
-        studioFetch('/api/betadesk/admin/settings'),
       ]);
       if (!projectsResponse.ok) throw new Error(await responseError(projectsResponse, 'Could not load projects.'));
       if (!testersResponse.ok) throw new Error(await responseError(testersResponse, 'Could not load tester profiles.'));
-      if (!adminsResponse.ok) throw new Error(await responseError(adminsResponse, 'Could not load BetaDesk admins.'));
-      if (!settingsResponse.ok) throw new Error(await responseError(settingsResponse, 'Could not load BetaDesk settings.'));
       setProjects(await projectsResponse.json() as BetaProject[]);
       setTesters(await testersResponse.json() as BetaTester[]);
-      const adminData = await adminsResponse.json() as { admins: BetaAdmin[]; canManageAdmins: boolean };
-      const settings = await settingsResponse.json() as BetaDeskSettings;
-      setAdmins(adminData.admins);
-      setCanManageAdmins(adminData.canManageAdmins);
-      setBetaDeskSettings(settings);
-      setNewSuperAdminEmail(settings.superAdminEmail);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Could not load tickets.');
     } finally {
@@ -256,7 +221,6 @@ export const BetaDeskAdmin: React.FC = () => {
           const response = await studioFetch('/api/betadesk/admin/access');
           const data = await response.json();
           setAccess(response.ok && data.allowed ? 'allowed' : 'denied');
-          setCanManageAdmins(Boolean(data.canManageAdmins));
         } catch {
           setAccess('denied');
         }
@@ -433,76 +397,6 @@ export const BetaDeskAdmin: React.FC = () => {
     }
   };
 
-  const inviteBetaDeskAdmin = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setManagingAdmin(true);
-    setAdminError('');
-    try {
-      const response = await studioFetch('/api/betadesk/admin/admins', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: inviteEmail }),
-      });
-      if (!response.ok) throw new Error(await responseError(response, 'Could not invite administrator.'));
-      const admin = await response.json() as BetaAdmin;
-      setAdmins((current) => [admin, ...current.filter((item) => item.email !== admin.email)]);
-      setInviteEmail('');
-    } catch (inviteError) {
-      setAdminError(inviteError instanceof Error ? inviteError.message : 'Could not invite administrator.');
-    } finally {
-      setManagingAdmin(false);
-    }
-  };
-
-  const removeBetaDeskAdmin = async (email: string) => {
-    if (!window.confirm(`Remove BetaDesk access for ${email}? This does not change their Studio/Merakifos access.`)) return;
-    setAdminError('');
-    try {
-      const response = await studioFetch(`/api/betadesk/admin/admins/${encodeURIComponent(email)}`, { method: 'DELETE' });
-      if (!response.ok) throw new Error(await responseError(response, 'Could not remove BetaDesk admin.'));
-      setAdmins((current) => current.filter((admin) => admin.email !== email));
-    } catch (removeError) {
-      setAdminError(removeError instanceof Error ? removeError.message : 'Could not remove BetaDesk admin.');
-    }
-  };
-
-  const updateSuperAdmin = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!window.confirm('Transfer Super BetaDesk Admin control to this Google account? The current Super Admin will remain a regular BetaDesk admin.')) return;
-    setSavingSuperAdmin(true);
-    setSettingsError('');
-    try {
-      const response = await studioFetch('/api/betadesk/admin/super-admin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: newSuperAdminEmail }),
-      });
-      if (!response.ok) throw new Error(await responseError(response, 'Could not update the Super BetaDesk Admin.'));
-      const data = await response.json() as { superAdminEmail: string };
-      setBetaDeskSettings((current) => current ? { ...current, superAdminEmail: data.superAdminEmail, driveConnected: false } : current);
-      setNewSuperAdminEmail(data.superAdminEmail);
-      await loadTickets();
-    } catch (updateError) {
-      setSettingsError(updateError instanceof Error ? updateError.message : 'Could not update the Super BetaDesk Admin.');
-    } finally {
-      setSavingSuperAdmin(false);
-    }
-  };
-
-  const connectDrive = async () => {
-    setConnectingDrive(true);
-    setSettingsError('');
-    try {
-      const response = await studioFetch('/api/betadesk/admin/drive/connect', { method: 'POST' });
-      if (!response.ok) throw new Error(await responseError(response, 'Could not connect Google Drive.'));
-      const data = await response.json() as { authorizationUrl: string };
-      window.location.assign(data.authorizationUrl);
-    } catch (connectError) {
-      setSettingsError(connectError instanceof Error ? connectError.message : 'Could not connect Google Drive.');
-      setConnectingDrive(false);
-    }
-  };
-
   const openAttachment = async (ticket: BetaTicket, attachment: BetaAttachment) => {
     setError('');
     const preview = window.open('about:blank', '_blank');
@@ -604,7 +498,8 @@ export const BetaDeskAdmin: React.FC = () => {
         <div className="mx-auto mt-20 max-w-md rounded-2xl border border-rose-200 bg-white p-8 text-center">
           <LockKeyhole className="mx-auto mb-4 h-9 w-9 text-rose-600" />
           <h1 className="text-2xl">Admin access required</h1>
-          <p className="my-4 text-sm text-[#76806B]">This Google account is not authorized to manage BetaDesk tickets.</p>
+          <p className="my-4 text-sm text-[#76806B]">Sign in with the Studio Super Admin, a Studio Admin, or a BetaDesk-only administrator. Manage BetaDesk access and storage from Studio access settings.</p>
+          <a href="/studio" className={`${primaryButton} mt-2`}>Return to Studio</a>
           <GoogleSignInButton user={user} onAuthChange={setUser} />
         </div>
       </BetaDeskShell>
@@ -651,10 +546,11 @@ export const BetaDeskAdmin: React.FC = () => {
 
         {error && <div role="alert" className="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</div>}
 
-        <div className="mb-6 grid items-start gap-4 lg:grid-cols-2">
+        <div className="mb-6 grid items-start gap-4">
           <section className="rounded-xl border border-[#E5EADF] bg-white p-4 sm:p-5">
             <h2 className="flex items-center gap-2 text-lg"><FolderPlus className="h-4 w-4 text-[#7C8B5F]" /> Beta projects</h2>
             <p className="mt-1 text-xs text-[#76806B]">Keep feedback for each app separate. Older tickets are grouped under the legacy project.</p>
+            <p className="mt-1 text-xs text-[#76806B]">Manage admin access and Google Drive storage from <a href="/studio" className="font-medium text-[#7C8B5F] underline">Studio access settings</a>.</p>
             <form onSubmit={createProject} className="mt-3 flex flex-col gap-2 sm:flex-row">
               <input required minLength={2} maxLength={100} value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder="New app / project name" className={inputClass} />
               <input maxLength={500} value={newProjectDescription} onChange={(event) => setNewProjectDescription(event.target.value)} placeholder="Optional description" className={inputClass} />
@@ -662,52 +558,6 @@ export const BetaDeskAdmin: React.FC = () => {
             </form>
             <div className="mt-3 flex flex-wrap gap-2">
               {projects.map((project) => <span key={project.id} className="rounded-full bg-[#F2F3ED] px-3 py-1 text-xs">{project.name}{project.id === 'legacy' ? ' · existing tickets' : ''}</span>)}
-            </div>
-          </section>
-
-          <section className="rounded-xl border border-[#E5EADF] bg-white p-4 sm:p-5">
-            <h2 className="flex items-center gap-2 text-lg"><ShieldCheck className="h-4 w-4 text-[#7C8B5F]" /> BetaDesk Super Admin &amp; storage</h2>
-            <p className="mt-1 text-xs text-[#76806B]">Separate from Studio roles. New attachments are stored privately in the Super Admin’s Google Drive.</p>
-            <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
-              <span className="font-medium">Super Admin:</span><span>{betaDeskSettings?.superAdminEmail || 'Loading…'}</span>
-            </div>
-            <p className="mt-2 text-xs text-[#76806B]">
-              Drive status: {betaDeskSettings?.driveConnected ? 'Connected' : 'Not connected'}
-            </p>
-            {betaDeskSettings?.canManageSettings && (
-              <>
-                <form onSubmit={updateSuperAdmin} className="mt-3 flex flex-col gap-2 sm:flex-row">
-                  <input required type="email" value={newSuperAdminEmail} onChange={(event) => setNewSuperAdminEmail(event.target.value)} placeholder="New Super Admin Google account" className={inputClass} />
-                  <button type="submit" className={primaryButton} disabled={savingSuperAdmin || newSuperAdminEmail.trim().toLowerCase() === betaDeskSettings.superAdminEmail}>
-                    {savingSuperAdmin ? 'Saving…' : 'Transfer role'}
-                  </button>
-                </form>
-                <button type="button" className={`${selectClass} mt-2 w-full sm:w-auto`} disabled={connectingDrive || newSuperAdminEmail.trim().toLowerCase() !== betaDeskSettings.superAdminEmail} onClick={() => void connectDrive()}>
-                  {connectingDrive ? 'Connecting…' : betaDeskSettings.driveConnected ? 'Reconnect Google Drive' : 'Connect Super Admin Google Drive'}
-                </button>
-              </>
-            )}
-            {settingsError && <p role="alert" className="mt-2 text-xs text-rose-700">{settingsError}</p>}
-          </section>
-
-          <section className="rounded-xl border border-[#E5EADF] bg-white p-4 sm:p-5">
-            <h2 className="flex items-center gap-2 text-lg"><UserPlus className="h-4 w-4 text-[#7C8B5F]" /> BetaDesk admins</h2>
-            <p className="mt-1 text-xs text-[#76806B]">This access is separate from Studio/Merakifos admin access.</p>
-            {canManageAdmins && (
-              <form onSubmit={inviteBetaDeskAdmin} className="mt-3 flex gap-2">
-                <input required type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="Google account email" className={inputClass} />
-                <button type="submit" className={primaryButton} disabled={managingAdmin}>{managingAdmin ? 'Adding…' : 'Add admin'}</button>
-              </form>
-            )}
-            {adminError && <p role="alert" className="mt-2 text-xs text-rose-700">{adminError}</p>}
-            <div className="mt-3 divide-y divide-[#F0F1EB]">
-              {admins.map((admin) => (
-                <div key={admin.email} className="flex items-center justify-between gap-2 py-2 text-sm">
-                  <span>{admin.email}</span>
-                  {canManageAdmins && <button type="button" title={`Remove ${admin.email} from BetaDesk admins`} className="rounded p-1.5 text-rose-700 hover:bg-rose-50" onClick={() => void removeBetaDeskAdmin(admin.email)}><Trash2 className="h-4 w-4" /></button>}
-                </div>
-              ))}
-              {admins.length === 0 && <p className="py-2 text-xs text-[#8A9380]">Only the Studio owner currently has BetaDesk access.</p>}
             </div>
           </section>
         </div>
