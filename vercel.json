@@ -20,6 +20,10 @@
     {
       "source": "/studio/:path*",
       "destination": "/"
+    },
+    {
+      "source": "/feedback/:path*",
+      "destination": "/"
     }
   ]
 }

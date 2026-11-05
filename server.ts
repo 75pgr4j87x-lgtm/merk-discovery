@@ -220,10 +220,12 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     'Closed',
   ];
   const hashBetaDeskToken = (token: string) => createHash('sha256').update(token).digest('hex');
-  const betaDeskPublicUrl = (req: express.Request, token: string) => {
-    const configuredUrl = process.env.PUBLIC_APP_URL
-      || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null);
-    const requestHost = req.get('host') || '';
+  const betaDeskAppBaseUrl = (req?: express.Request) => {
+    const deploymentUrl = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null;
+    const configuredUrl = process.env.VERCEL_ENV === 'preview'
+      ? deploymentUrl || process.env.PUBLIC_APP_URL
+      : process.env.PUBLIC_APP_URL || deploymentUrl;
+    const requestHost = req?.get('host') || '';
     const localUrl = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(requestHost)
       ? `http://${requestHost}`
       : null;
@@ -233,6 +235,10 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     if (url.protocol !== 'https:' && url.hostname !== 'localhost' && url.hostname !== '127.0.0.1') {
       throw new Error('PUBLIC_APP_URL must use HTTPS.');
     }
+    return url;
+  };
+  const betaDeskPublicUrl = (req: express.Request, token: string) => {
+    const url = betaDeskAppBaseUrl(req);
     const shareUrl = new URL('/feedback/tester', url);
     shareUrl.hash = `tester=${encodeURIComponent(token)}`;
     return shareUrl.toString();
@@ -610,7 +616,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
         recipient,
         'admin_new_ticket',
         `New BetaDesk ticket ${result.ticket.ticketNumber}: ${subject}`,
-        `${tester.displayName} submitted a ${category}.\n\n${description}\n\nReview: ${process.env.PUBLIC_APP_URL || `https://${process.env.VERCEL_URL || 'localhost:3000'}`}/studio/beta-feedback`
+        `${tester.displayName} submitted a ${category}.\n\n${description}\n\nReview: ${new URL('/studio/beta-feedback', betaDeskAppBaseUrl()).toString()}`
       )));
       return res.status(result.duplicate ? 200 : 201).json({
         ticket: result.ticket,
@@ -703,7 +709,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
         recipient,
         'admin_new_ticket',
         `Tester replied to ${ticketNumber}`,
-        `${tester.displayName} replied:\n\n${message}\n\nReview: ${process.env.PUBLIC_APP_URL || `https://${process.env.VERCEL_URL || 'localhost:3000'}`}/studio/beta-feedback`
+        `${tester.displayName} replied:\n\n${message}\n\nReview: ${new URL('/studio/beta-feedback', betaDeskAppBaseUrl()).toString()}`
       )));
       return res.status(201).json({ comment, notifications: notificationResults });
     } catch (error) {
