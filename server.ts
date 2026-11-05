@@ -20,10 +20,15 @@ import {
   createBetaDeskTester,
   createBetaDeskTicket,
   createBetaDeskUploadGrant,
-  getBetaDeskAttachmentUrl,
+  completeBetaDeskUploadGrant,
+  completeBetaDeskDriveAuthorization,
+  changeBetaDeskSuperAdmin,
+  createBetaDeskDriveAuthorizationUrl,
+  getBetaDeskAttachmentChunk,
   getStudioAuth,
   loadBetaDeskAdmin,
   loadBetaDeskAdmins,
+  loadBetaDeskDriveConnectionStatus,
   loadBetaDeskComments,
   loadBetaDeskProject,
   loadBetaDeskProjects,
@@ -32,6 +37,7 @@ import {
   loadBetaDeskTicketsForTester,
   loadBetaDeskTesterByTokenHash,
   loadBetaDeskTesters,
+  loadBetaDeskSettings,
   loadStudioInvite,
   findProjectByShareTokenHash,
   loadStudioInvites,
@@ -153,9 +159,10 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
         res.status(403).json({ error: 'A verified Google email is required for BetaDesk administration.' });
         return null;
       }
-      const isOwner = Boolean(ownerEmail && email === ownerEmail);
-      const betaAdmin = isOwner ? null : await loadBetaDeskAdmin(email);
-      return { email, isOwner, isBetaDeskAdmin: Boolean(betaAdmin?.active) };
+      const settings = await loadBetaDeskSettings(ownerEmail || '');
+      const isSuperAdmin = email === settings.superAdminEmail;
+      const betaAdmin = isSuperAdmin ? null : await loadBetaDeskAdmin(email);
+      return { email, uid: decodedToken.uid, isSuperAdmin, isBetaDeskAdmin: Boolean(betaAdmin?.active) };
     } catch {
       res.status(401).json({ error: 'Invalid or expired BetaDesk sign-in.' });
       return null;
@@ -165,23 +172,27 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
   const requireBetaDeskAdmin: express.RequestHandler = async (req, res, next) => {
     const identity = await verifyBetaDeskIdentity(req, res);
     if (!identity) return;
-    if (!identity.isOwner && !identity.isBetaDeskAdmin) {
+    if (!identity.isSuperAdmin && !identity.isBetaDeskAdmin) {
       res.status(403).json({ error: 'This Google account has not been granted BetaDesk admin access.' });
       return;
     }
     res.locals.betaDeskEmail = identity.email;
-    res.locals.canManageBetaDeskAdmins = identity.isOwner;
+    res.locals.studioEmail = identity.email;
+    res.locals.betaDeskUid = identity.uid;
+    res.locals.canManageBetaDeskAdmins = identity.isSuperAdmin;
+    res.locals.isBetaDeskSuperAdmin = identity.isSuperAdmin;
     next();
   };
 
   const requireBetaDeskOwner: express.RequestHandler = async (req, res, next) => {
     const identity = await verifyBetaDeskIdentity(req, res);
     if (!identity) return;
-    if (!identity.isOwner) {
-      res.status(403).json({ error: 'Only the Studio owner can manage BetaDesk administrator access.' });
+    if (!identity.isSuperAdmin) {
+      res.status(403).json({ error: 'Only the Super BetaDesk Admin can manage BetaDesk administrator access.' });
       return;
     }
     res.locals.betaDeskEmail = identity.email;
+    res.locals.betaDeskUid = identity.uid;
     next();
   };
 
@@ -270,8 +281,8 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     const identity = await verifyBetaDeskIdentity(req, res);
     if (!identity) return;
     return res.json({
-      allowed: identity.isOwner || identity.isBetaDeskAdmin,
-      canManageAdmins: identity.isOwner,
+      allowed: identity.isSuperAdmin || identity.isBetaDeskAdmin,
+      canManageAdmins: identity.isSuperAdmin,
       email: identity.email,
     });
   });
@@ -288,12 +299,85 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     }
   });
 
+  app.get('/api/betadesk/admin/settings', requireBetaDeskAdmin, async (_req, res) => {
+    try {
+      const settings = await loadBetaDeskSettings(ownerEmail || '');
+      return res.json({
+        superAdminEmail: settings.superAdminEmail,
+        driveConnected: await loadBetaDeskDriveConnectionStatus(settings.superAdminEmail),
+        canManageSettings: Boolean(res.locals.isBetaDeskSuperAdmin),
+      });
+    } catch (error) {
+      console.error('Failed to load BetaDesk settings:', error);
+      return res.status(500).json({ error: 'Could not load BetaDesk settings.' });
+    }
+  });
+
+  app.post('/api/betadesk/admin/super-admin', requireBetaDeskOwner, async (req, res) => {
+    const { isValid, email } = sanitizeEmail(req.body?.email);
+    if (!isValid) return res.status(400).json({ error: 'Enter a valid Google account email address.' });
+    try {
+      const settings = await loadBetaDeskSettings(ownerEmail || '');
+      if (settings.superAdminEmail !== email) {
+        await saveBetaDeskAdmin(settings.superAdminEmail, res.locals.betaDeskEmail || 'Super BetaDesk Admin');
+        await changeBetaDeskSuperAdmin(email);
+      }
+      return res.json({ superAdminEmail: email });
+    } catch (error) {
+      console.error('Failed to update the Super BetaDesk Admin:', error);
+      return res.status(500).json({ error: 'Could not update the Super BetaDesk Admin.' });
+    }
+  });
+
+  app.post('/api/betadesk/admin/drive/connect', requireBetaDeskOwner, async (_req, res) => {
+    try {
+      const authorizationUrl = await createBetaDeskDriveAuthorizationUrl(
+        res.locals.betaDeskEmail,
+        res.locals.betaDeskUid
+      );
+      return res.json({ authorizationUrl });
+    } catch (error) {
+      console.error('Failed to start BetaDesk Google Drive authorization:', error);
+      return res.status(503).json({ error: error instanceof Error ? error.message : 'Could not connect Google Drive.' });
+    }
+  });
+
+  app.get('/api/betadesk/admin/drive/callback', async (req, res) => {
+    const code = typeof req.query.code === 'string' ? req.query.code : '';
+    const state = typeof req.query.state === 'string' ? req.query.state : '';
+    const providerError = typeof req.query.error === 'string' ? req.query.error : '';
+    const requestHost = req.get('host') || '';
+    const localBase = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(requestHost) ? `http://${requestHost}` : null;
+    const appBase = process.env.PUBLIC_APP_URL
+      || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : localBase);
+    if (!appBase) return res.status(503).send('BetaDesk callback URL is not configured.');
+    const settingsUrl = new URL('/studio/beta-feedback', appBase);
+    if (providerError || !code || !state) {
+      settingsUrl.searchParams.set('drive', 'error');
+      return res.redirect(settingsUrl.toString());
+    }
+    try {
+      const result = await completeBetaDeskDriveAuthorization(code, state);
+      const settings = await loadBetaDeskSettings(ownerEmail || '');
+      if (result.email !== settings.superAdminEmail) {
+        throw new Error('The Super BetaDesk Admin changed during authorization. Start the connection again.');
+      }
+      settingsUrl.searchParams.set('drive', 'connected');
+      return res.redirect(settingsUrl.toString());
+    } catch (error) {
+      console.error('BetaDesk Google Drive authorization failed:', error);
+      settingsUrl.searchParams.set('drive', 'error');
+      return res.redirect(settingsUrl.toString());
+    }
+  });
+
   app.post('/api/betadesk/admin/admins', requireBetaDeskOwner, async (req, res) => {
     const { isValid, email } = sanitizeEmail(req.body?.email);
     if (!isValid) return res.status(400).json({ error: 'Enter a valid Google account email address.' });
-    if (email === ownerEmail) return res.status(400).json({ error: 'The Studio owner already has BetaDesk access.' });
     try {
-      await saveBetaDeskAdmin(email, res.locals.betaDeskEmail || 'Studio owner');
+      const settings = await loadBetaDeskSettings(ownerEmail || '');
+      if (email === settings.superAdminEmail) return res.status(400).json({ error: 'The Super BetaDesk Admin already has BetaDesk access.' });
+      await saveBetaDeskAdmin(email, res.locals.betaDeskEmail || 'Super BetaDesk Admin');
       return res.status(201).json({ email, active: true });
     } catch (error) {
       console.error('Failed to grant BetaDesk admin access:', error);
@@ -304,7 +388,8 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
   app.delete('/api/betadesk/admin/admins/:email', requireBetaDeskOwner, async (req, res) => {
     const { isValid, email } = sanitizeEmail(req.params.email);
     if (!isValid) return res.status(400).json({ error: 'Invalid administrator email address.' });
-    if (email === ownerEmail) return res.status(400).json({ error: 'The Studio owner cannot be removed here.' });
+    const settings = await loadBetaDeskSettings(ownerEmail || '');
+    if (email === settings.superAdminEmail) return res.status(400).json({ error: 'The Super BetaDesk Admin cannot be removed here.' });
     try {
       await removeBetaDeskAdmin(email);
       return res.json({ success: true });
@@ -428,10 +513,11 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
 
   app.post('/api/betadesk/tester/uploads', async (req, res) => {
     const token = betaDeskTesterToken(req);
+    if (!token) return res.status(401).json({ error: 'Tester link required.' });
     const fileName = sanitizePlainText(req.body?.fileName, 120).replace(/[\\/]/g, '_');
     const contentType = sanitizePlainText(req.body?.contentType, 100).toLowerCase();
     const size = Number(req.body?.size);
-    if (!token || !fileName || !Number.isSafeInteger(size) || size < 1) {
+    if (!fileName || !Number.isSafeInteger(size) || size < 1) {
       return res.status(400).json({ error: 'Provide a valid file name, type, and size.' });
     }
     try {
@@ -443,11 +529,34 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
       const upload = await createBetaDeskUploadGrant(tester.id, fileName, contentType, size);
       return res.status(201).json(upload);
     } catch (error) {
-      if (error instanceof Error && error.message === 'FIREBASE_STORAGE_BUCKET is not configured.') {
+      if (error instanceof Error && (
+        error.message.includes('Google Drive')
+        || error.message.includes('BETADESK_OAUTH_TOKEN_ENCRYPTION_KEY')
+      )) {
         return res.status(503).json({ error: 'File uploads are not configured on this server.' });
       }
       console.error('Failed to create a BetaDesk upload grant:', error);
-      return res.status(400).json({ error: error instanceof Error ? error.message : 'Could not prepare this upload.' });
+      return res.status(500).json({ error: 'Could not prepare this upload.' });
+    }
+  });
+
+  app.post('/api/betadesk/tester/uploads/:uploadId/complete', async (req, res) => {
+    const token = betaDeskTesterToken(req);
+    if (!token) return res.status(401).json({ error: 'Tester link required.' });
+    const { uploadId } = req.params;
+    const fileId = typeof req.body?.fileId === 'string' ? req.body.fileId : '';
+    if (!/^[0-9a-f-]{36}$/i.test(uploadId) || !fileId) {
+      return res.status(400).json({ error: 'Invalid attachment upload.' });
+    }
+    try {
+      const tester = await loadBetaDeskTesterByTokenHash(hashBetaDeskToken(token));
+      if (!tester) return res.status(404).json({ error: 'This tester link is invalid or revoked.' });
+      const attachment = await completeBetaDeskUploadGrant(tester.id, uploadId, fileId);
+      if (!attachment) return res.status(400).json({ error: 'The uploaded file could not be verified.' });
+      return res.json({ attachment });
+    } catch (error) {
+      console.error('Failed to verify BetaDesk Drive upload:', error);
+      return res.status(500).json({ error: 'Could not verify this attachment.' });
     }
   });
 
@@ -572,12 +681,27 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
   app.get('/api/betadesk/tester/tickets/:ticketNumber/attachments/:uploadId', async (req, res) => {
     const token = betaDeskTesterToken(req);
     if (!token) return res.status(401).json({ error: 'Tester link required.' });
+    const range = (req.get('range') || '').match(/^bytes=(\d+)-(\d+)$/);
+    if (!range) return res.status(416).json({ error: 'A valid byte range is required.' });
+    const start = Number(range[1]);
+    const end = Number(range[2]);
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end < start || end - start + 1 > 4 * 1024 * 1024) {
+      return res.status(416).json({ error: 'Requested byte range is too large or invalid.' });
+    }
     try {
       const tester = await loadBetaDeskTesterByTokenHash(hashBetaDeskToken(token));
       if (!tester) return res.status(404).json({ error: 'This tester link is invalid or revoked.' });
-      const url = await getBetaDeskAttachmentUrl(tester.id, req.params.ticketNumber, req.params.uploadId);
-      if (!url) return res.status(404).json({ error: 'Attachment not found.' });
-      return res.json({ url });
+      const attachment = await getBetaDeskAttachmentChunk(tester.id, req.params.ticketNumber, req.params.uploadId, start, end);
+      if (!attachment) return res.status(404).json({ error: 'Attachment not found.' });
+      res.set({
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': 'private, no-store',
+        'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(attachment.fileName)}`,
+        'Content-Length': String(attachment.data.length),
+        'Content-Range': `bytes ${start}-${end}/${attachment.size}`,
+        'Content-Type': attachment.contentType,
+      });
+      return res.status(206).send(attachment.data);
     } catch (error) {
       console.error('Failed to prepare tester attachment download:', error);
       return res.status(500).json({ error: 'Could not access this attachment.' });
@@ -649,14 +773,29 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
   });
 
   app.get('/api/betadesk/admin/tickets/:ticketNumber/attachments/:uploadId', requireBetaDeskAdmin, async (req, res) => {
+    const range = (req.get('range') || '').match(/^bytes=(\d+)-(\d+)$/);
+    if (!range) return res.status(416).json({ error: 'A valid byte range is required.' });
+    const start = Number(range[1]);
+    const end = Number(range[2]);
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end < start || end - start + 1 > 4 * 1024 * 1024) {
+      return res.status(416).json({ error: 'Requested byte range is too large or invalid.' });
+    }
     try {
       const ticket = await loadBetaDeskTicket(req.params.ticketNumber);
       if (!ticket || !ticket.attachments?.some((attachment) => attachment.uploadId === req.params.uploadId)) {
         return res.status(404).json({ error: 'Attachment not found.' });
       }
-      const url = await getBetaDeskAttachmentUrl(ticket.testerId, ticket.ticketNumber, req.params.uploadId);
-      if (!url) return res.status(404).json({ error: 'Attachment not found.' });
-      return res.json({ url });
+      const attachment = await getBetaDeskAttachmentChunk(ticket.testerId, ticket.ticketNumber, req.params.uploadId, start, end);
+      if (!attachment) return res.status(404).json({ error: 'Attachment not found.' });
+      res.set({
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': 'private, no-store',
+        'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(attachment.fileName)}`,
+        'Content-Length': String(attachment.data.length),
+        'Content-Range': `bytes ${start}-${end}/${attachment.size}`,
+        'Content-Type': attachment.contentType,
+      });
+      return res.status(206).send(attachment.data);
     } catch (error) {
       console.error('Failed to prepare BetaDesk admin attachment download:', error);
       return res.status(500).json({ error: 'Could not access this attachment.' });
@@ -686,9 +825,10 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     }
     try {
       if (normalizedAssignee) {
-        const isOwner = normalizedAssignee === ownerEmail;
-        const betaDeskAdmin = isOwner ? null : await loadBetaDeskAdmin(normalizedAssignee);
-        if (!isOwner && !betaDeskAdmin?.active) {
+        const settings = await loadBetaDeskSettings(ownerEmail || '');
+        const isSuperAdmin = normalizedAssignee === settings.superAdminEmail;
+        const betaDeskAdmin = isSuperAdmin ? null : await loadBetaDeskAdmin(normalizedAssignee);
+        if (!isSuperAdmin && !betaDeskAdmin?.active) {
           return res.status(400).json({ error: 'Tickets can only be assigned to an active BetaDesk administrator.' });
         }
       }

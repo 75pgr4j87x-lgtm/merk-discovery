@@ -254,22 +254,28 @@ export const TesterPortal: React.FC<{ testerToken: string }> = ({ testerToken })
           body: JSON.stringify({ fileName: file.name, contentType: file.type, size: file.size }),
         });
         if (!grantResponse.ok) throw new Error(await getError(grantResponse, 'Could not prepare an attachment.'));
-        const grant = await grantResponse.json() as {
+        const upload = await grantResponse.json() as {
           grant: { uploadId: string; fileName: string; contentType: string };
-          url: string;
-          fields: Record<string, string>;
+          uploadUrl: string;
         };
-        const body = new FormData();
-        Object.entries(grant.fields).forEach(([key, value]) => body.append(key, value));
-        body.append('file', file);
-        const uploadResponse = await fetch(grant.url, { method: 'POST', body });
+        const uploadResponse = await fetch(upload.uploadUrl, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': file.type,
+            'Content-Range': `bytes 0-${file.size - 1}/${file.size}`,
+          },
+          body: file,
+        });
         if (!uploadResponse.ok) throw new Error(`Could not upload ${file.name}.`);
-        const attachment: BetaAttachment = {
-          uploadId: grant.grant.uploadId,
-          fileName: grant.grant.fileName,
-          contentType: grant.grant.contentType,
-          size: file.size,
-        };
+        const driveFile = await uploadResponse.json() as { id: string };
+        const completeResponse = await apiFetch(`/uploads/${encodeURIComponent(upload.grant.uploadId)}/complete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fileId: driveFile.id }),
+        });
+        if (!completeResponse.ok) throw new Error(await getError(completeResponse, `Could not verify ${file.name}.`));
+        const completed = await completeResponse.json() as { attachment: BetaAttachment };
+        const attachment = completed.attachment;
         setUploadedFiles((current) => [...current, attachment]);
       }
     } catch (uploadError) {
@@ -342,14 +348,34 @@ export const TesterPortal: React.FC<{ testerToken: string }> = ({ testerToken })
 
   const openAttachment = async (ticket: BetaTicket, attachment: BetaAttachment) => {
     setError('');
+    const preview = window.open('about:blank', '_blank');
+    if (!preview) {
+      setError('Allow pop-ups to view this attachment.');
+      return;
+    }
+    preview.opener = null;
     try {
-      const response = await apiFetch(
-        `/tickets/${encodeURIComponent(ticket.ticketNumber)}/attachments/${encodeURIComponent(attachment.uploadId)}`
-      );
-      if (!response.ok) throw new Error(await getError(response, 'Could not access this attachment.'));
-      const result = await response.json() as { url: string };
-      window.open(result.url, '_blank', 'noopener,noreferrer');
+      const chunks: Blob[] = [];
+      const chunkSize = 4 * 1024 * 1024;
+      for (let start = 0; start < attachment.size; start += chunkSize) {
+        const end = Math.min(start + chunkSize, attachment.size) - 1;
+        const response = await apiFetch(
+          `/tickets/${encodeURIComponent(ticket.ticketNumber)}/attachments/${encodeURIComponent(attachment.uploadId)}`,
+          { headers: { Range: `bytes=${start}-${end}` } }
+        );
+        if (!response.ok) throw new Error(await getError(response, 'Could not access this attachment.'));
+        chunks.push(await response.blob());
+      }
+      const url = URL.createObjectURL(new Blob(chunks, { type: attachment.contentType }));
+      preview.location.href = url;
+      const cleanup = window.setInterval(() => {
+        if (preview.closed) {
+          window.clearInterval(cleanup);
+          URL.revokeObjectURL(url);
+        }
+      }, 1000);
     } catch (attachmentError) {
+      preview.close();
       setError(attachmentError instanceof Error ? attachmentError.message : 'Could not access this attachment.');
     }
   };

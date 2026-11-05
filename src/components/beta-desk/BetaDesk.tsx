@@ -96,6 +96,12 @@ interface BetaAdmin {
   createdAt: string;
 }
 
+interface BetaDeskSettings {
+  superAdminEmail: string;
+  driveConnected: boolean;
+  canManageSettings: boolean;
+}
+
 interface BetaComment {
   id: string;
   authorType: 'tester' | 'admin';
@@ -164,6 +170,7 @@ export const BetaDeskAdmin: React.FC = () => {
   const [user, setUser] = React.useState<User | null>(null);
   const [access, setAccess] = React.useState<'checking' | 'allowed' | 'denied'>('checking');
   const [canManageAdmins, setCanManageAdmins] = React.useState(false);
+  const [betaDeskSettings, setBetaDeskSettings] = React.useState<BetaDeskSettings | null>(null);
   const [tickets, setTickets] = React.useState<BetaTicket[]>([]);
   const [projects, setProjects] = React.useState<BetaProject[]>([]);
   const [admins, setAdmins] = React.useState<BetaAdmin[]>([]);
@@ -194,7 +201,17 @@ export const BetaDeskAdmin: React.FC = () => {
   const [inviteEmail, setInviteEmail] = React.useState('');
   const [adminError, setAdminError] = React.useState('');
   const [managingAdmin, setManagingAdmin] = React.useState(false);
+  const [newSuperAdminEmail, setNewSuperAdminEmail] = React.useState('');
+  const [savingSuperAdmin, setSavingSuperAdmin] = React.useState(false);
+  const [connectingDrive, setConnectingDrive] = React.useState(false);
+  const [settingsError, setSettingsError] = React.useState('');
   const pageSize = 12;
+
+  React.useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('drive') === 'error') {
+      setSettingsError('Google Drive could not be connected. Confirm the current Super BetaDesk Admin account and OAuth configuration, then try again.');
+    }
+  }, []);
 
   const loadTickets = React.useCallback(async () => {
     setLoading(true);
@@ -205,19 +222,24 @@ export const BetaDeskAdmin: React.FC = () => {
       const data = await response.json() as BetaTicket[];
       setTickets(data);
       setSelectedNumber((current) => current || data[0]?.ticketNumber || '');
-      const [projectsResponse, testersResponse, adminsResponse] = await Promise.all([
+      const [projectsResponse, testersResponse, adminsResponse, settingsResponse] = await Promise.all([
         studioFetch('/api/betadesk/admin/projects'),
         studioFetch('/api/betadesk/admin/testers'),
         studioFetch('/api/betadesk/admin/admins'),
+        studioFetch('/api/betadesk/admin/settings'),
       ]);
       if (!projectsResponse.ok) throw new Error(await responseError(projectsResponse, 'Could not load projects.'));
       if (!testersResponse.ok) throw new Error(await responseError(testersResponse, 'Could not load tester profiles.'));
       if (!adminsResponse.ok) throw new Error(await responseError(adminsResponse, 'Could not load BetaDesk admins.'));
+      if (!settingsResponse.ok) throw new Error(await responseError(settingsResponse, 'Could not load BetaDesk settings.'));
       setProjects(await projectsResponse.json() as BetaProject[]);
       setTesters(await testersResponse.json() as BetaTester[]);
       const adminData = await adminsResponse.json() as { admins: BetaAdmin[]; canManageAdmins: boolean };
+      const settings = await settingsResponse.json() as BetaDeskSettings;
       setAdmins(adminData.admins);
       setCanManageAdmins(adminData.canManageAdmins);
+      setBetaDeskSettings(settings);
+      setNewSuperAdminEmail(settings.superAdminEmail);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Could not load tickets.');
     } finally {
@@ -444,16 +466,73 @@ export const BetaDeskAdmin: React.FC = () => {
     }
   };
 
+  const updateSuperAdmin = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!window.confirm('Transfer Super BetaDesk Admin control to this Google account? The current Super Admin will remain a regular BetaDesk admin.')) return;
+    setSavingSuperAdmin(true);
+    setSettingsError('');
+    try {
+      const response = await studioFetch('/api/betadesk/admin/super-admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: newSuperAdminEmail }),
+      });
+      if (!response.ok) throw new Error(await responseError(response, 'Could not update the Super BetaDesk Admin.'));
+      const data = await response.json() as { superAdminEmail: string };
+      setBetaDeskSettings((current) => current ? { ...current, superAdminEmail: data.superAdminEmail, driveConnected: false } : current);
+      setNewSuperAdminEmail(data.superAdminEmail);
+      await loadTickets();
+    } catch (updateError) {
+      setSettingsError(updateError instanceof Error ? updateError.message : 'Could not update the Super BetaDesk Admin.');
+    } finally {
+      setSavingSuperAdmin(false);
+    }
+  };
+
+  const connectDrive = async () => {
+    setConnectingDrive(true);
+    setSettingsError('');
+    try {
+      const response = await studioFetch('/api/betadesk/admin/drive/connect', { method: 'POST' });
+      if (!response.ok) throw new Error(await responseError(response, 'Could not connect Google Drive.'));
+      const data = await response.json() as { authorizationUrl: string };
+      window.location.assign(data.authorizationUrl);
+    } catch (connectError) {
+      setSettingsError(connectError instanceof Error ? connectError.message : 'Could not connect Google Drive.');
+      setConnectingDrive(false);
+    }
+  };
+
   const openAttachment = async (ticket: BetaTicket, attachment: BetaAttachment) => {
     setError('');
+    const preview = window.open('about:blank', '_blank');
+    if (!preview) {
+      setError('Allow pop-ups to view this attachment.');
+      return;
+    }
+    preview.opener = null;
     try {
-      const response = await studioFetch(
-        `/api/betadesk/admin/tickets/${encodeURIComponent(ticket.ticketNumber)}/attachments/${encodeURIComponent(attachment.uploadId)}`
-      );
-      if (!response.ok) throw new Error(await responseError(response, 'Could not access attachment.'));
-      const result = await response.json() as { url: string };
-      window.open(result.url, '_blank', 'noopener,noreferrer');
+      const chunks: Blob[] = [];
+      const chunkSize = 4 * 1024 * 1024;
+      for (let start = 0; start < attachment.size; start += chunkSize) {
+        const end = Math.min(start + chunkSize, attachment.size) - 1;
+        const response = await studioFetch(
+          `/api/betadesk/admin/tickets/${encodeURIComponent(ticket.ticketNumber)}/attachments/${encodeURIComponent(attachment.uploadId)}`,
+          { headers: { Range: `bytes=${start}-${end}` } }
+        );
+        if (!response.ok) throw new Error(await responseError(response, 'Could not access attachment.'));
+        chunks.push(await response.blob());
+      }
+      const url = URL.createObjectURL(new Blob(chunks, { type: attachment.contentType }));
+      preview.location.href = url;
+      const cleanup = window.setInterval(() => {
+        if (preview.closed) {
+          window.clearInterval(cleanup);
+          URL.revokeObjectURL(url);
+        }
+      }, 1000);
     } catch (attachmentError) {
+      preview.close();
       setError(attachmentError instanceof Error ? attachmentError.message : 'Could not access attachment.');
     }
   };
@@ -584,6 +663,31 @@ export const BetaDeskAdmin: React.FC = () => {
             <div className="mt-3 flex flex-wrap gap-2">
               {projects.map((project) => <span key={project.id} className="rounded-full bg-[#F2F3ED] px-3 py-1 text-xs">{project.name}{project.id === 'legacy' ? ' · existing tickets' : ''}</span>)}
             </div>
+          </section>
+
+          <section className="rounded-xl border border-[#E5EADF] bg-white p-4 sm:p-5">
+            <h2 className="flex items-center gap-2 text-lg"><ShieldCheck className="h-4 w-4 text-[#7C8B5F]" /> BetaDesk Super Admin &amp; storage</h2>
+            <p className="mt-1 text-xs text-[#76806B]">Separate from Studio roles. New attachments are stored privately in the Super Admin’s Google Drive.</p>
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+              <span className="font-medium">Super Admin:</span><span>{betaDeskSettings?.superAdminEmail || 'Loading…'}</span>
+            </div>
+            <p className="mt-2 text-xs text-[#76806B]">
+              Drive status: {betaDeskSettings?.driveConnected ? 'Connected' : 'Not connected'}
+            </p>
+            {betaDeskSettings?.canManageSettings && (
+              <>
+                <form onSubmit={updateSuperAdmin} className="mt-3 flex flex-col gap-2 sm:flex-row">
+                  <input required type="email" value={newSuperAdminEmail} onChange={(event) => setNewSuperAdminEmail(event.target.value)} placeholder="New Super Admin Google account" className={inputClass} />
+                  <button type="submit" className={primaryButton} disabled={savingSuperAdmin || newSuperAdminEmail.trim().toLowerCase() === betaDeskSettings.superAdminEmail}>
+                    {savingSuperAdmin ? 'Saving…' : 'Transfer role'}
+                  </button>
+                </form>
+                <button type="button" className={`${selectClass} mt-2 w-full sm:w-auto`} disabled={connectingDrive || newSuperAdminEmail.trim().toLowerCase() !== betaDeskSettings.superAdminEmail} onClick={() => void connectDrive()}>
+                  {connectingDrive ? 'Connecting…' : betaDeskSettings.driveConnected ? 'Reconnect Google Drive' : 'Connect Super Admin Google Drive'}
+                </button>
+              </>
+            )}
+            {settingsError && <p role="alert" className="mt-2 text-xs text-rose-700">{settingsError}</p>}
           </section>
 
           <section className="rounded-xl border border-[#E5EADF] bg-white p-4 sm:p-5">
@@ -885,258 +989,3 @@ const BetaDeskShell: React.FC<BetaDeskShellProps> = ({ children, theme = 'light'
 );
 
 export const BetaDeskPublic: React.FC = () => <TesterLinkRequired />;
-
-const FeedbackForm: React.FC = () => {
-  const [form, setForm] = React.useState({
-    submitterName: '',
-    submitterEmail: '',
-    subject: '',
-    description: '',
-    category: 'Bug Report' as TicketCategory,
-    platform: '',
-    appVersion: '',
-    deviceModel: '',
-    operatingSystem: '',
-  });
-  const [idempotencyKey, setIdempotencyKey] = React.useState(() => crypto.randomUUID());
-  const [accessUrl, setAccessUrl] = React.useState('');
-  const [ticketNumber, setTicketNumber] = React.useState('');
-  const [testerEmailStatus, setTesterEmailStatus] = React.useState<'sent' | 'recorded' | 'failed'>('recorded');
-  const [error, setError] = React.useState('');
-  const [submitting, setSubmitting] = React.useState(false);
-  const [showAccessRequest, setShowAccessRequest] = React.useState(false);
-  const [accessRequest, setAccessRequest] = React.useState({ ticketNumber: '', email: '' });
-  const [accessNotice, setAccessNotice] = React.useState('');
-  const [accessRequesting, setAccessRequesting] = React.useState(false);
-
-  const change = (field: keyof typeof form) => (
-    event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
-  ) => setForm((current) => ({ ...current, [field]: event.target.value }));
-
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setSubmitting(true);
-    setError('');
-    try {
-      const response = await fetch('/api/betadesk/tickets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
-        body: JSON.stringify(form),
-      });
-      if (!response.ok) throw new Error(await responseError(response, 'Could not submit feedback.'));
-      const result = await response.json() as {
-        ticketNumber: string;
-        accessUrl: string;
-        testerEmailStatus: 'sent' | 'recorded' | 'failed';
-      };
-      setTicketNumber(result.ticketNumber);
-      setAccessUrl(result.accessUrl);
-      setTesterEmailStatus(result.testerEmailStatus);
-    } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Could not submit feedback.');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const requestAccessLink = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setAccessRequesting(true);
-    setAccessNotice('');
-    try {
-      const response = await fetch('/api/betadesk/tickets/access-link', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(accessRequest),
-      });
-      if (!response.ok) throw new Error(await responseError(response, 'Could not process this request.'));
-      setAccessNotice('If the ticket and email match, a fresh private link will arrive shortly.');
-    } catch (requestError) {
-      setAccessNotice(requestError instanceof Error ? requestError.message : 'Could not process this request.');
-    } finally {
-      setAccessRequesting(false);
-    }
-  };
-
-  return (
-    <BetaDeskShell>
-      <main className="mx-auto max-w-2xl px-4 py-10 sm:py-14">
-        {!ticketNumber ? (
-          <section className="rounded-2xl border border-[#E5EADF] bg-white p-5 shadow-sm sm:p-8">
-            <div className="mb-5 inline-flex items-center gap-2 rounded-full bg-[#F2F3ED] px-3 py-1 text-xs text-[#69745E]"><MessageSquare className="h-3.5 w-3.5" /> Beta tester feedback</div>
-            <h1 className="text-3xl">Help us improve</h1>
-            <p className="mb-6 mt-2 text-sm leading-6 text-[#76806B]">Report a bug, share an idea, or tell us how your beta experience is going. No account is needed.</p>
-            {error && <div role="alert" className="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">{error}</div>}
-            <form onSubmit={submit} className="space-y-4">
-              <div className="grid gap-4 sm:grid-cols-2">
-                <label className="text-xs font-medium">Your name<input required maxLength={100} value={form.submitterName} onChange={change('submitterName')} className={`${inputClass} mt-1.5`} /></label>
-                <label className="text-xs font-medium">Email address<input required type="email" maxLength={254} value={form.submitterEmail} onChange={change('submitterEmail')} className={`${inputClass} mt-1.5`} /></label>
-              </div>
-              <label className="block text-xs font-medium">Category<select value={form.category} onChange={change('category')} className={`${inputClass} mt-1.5`}>{categories.map((category) => <option key={category}>{category}</option>)}</select></label>
-              <label className="block text-xs font-medium">Subject<input required minLength={3} maxLength={150} value={form.subject} onChange={change('subject')} className={`${inputClass} mt-1.5`} placeholder="A short summary" /></label>
-              <label className="block text-xs font-medium">What happened or what would you like to see?<textarea required minLength={10} maxLength={5000} rows={6} value={form.description} onChange={change('description')} className={`${inputClass} mt-1.5`} placeholder="Include steps to reproduce if you're reporting a bug." /></label>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <label className="text-xs font-medium">Platform<input maxLength={80} value={form.platform} onChange={change('platform')} className={`${inputClass} mt-1.5`} placeholder="Web, iOS, Android…" /></label>
-                <label className="text-xs font-medium">App version<input maxLength={80} value={form.appVersion} onChange={change('appVersion')} className={`${inputClass} mt-1.5`} /></label>
-                <label className="text-xs font-medium">Device<input maxLength={120} value={form.deviceModel} onChange={change('deviceModel')} className={`${inputClass} mt-1.5`} placeholder="Optional" /></label>
-                <label className="text-xs font-medium">Operating system<input maxLength={120} value={form.operatingSystem} onChange={change('operatingSystem')} className={`${inputClass} mt-1.5`} placeholder="Optional" /></label>
-              </div>
-              <p className="text-xs text-[#8A9380]">Please do not include passwords, payment details, or other sensitive information.</p>
-              <button disabled={submitting} className={`${primaryButton} w-full sm:w-auto`}><Send className="h-4 w-4" /> {submitting ? 'Submitting…' : 'Submit feedback'}</button>
-            </form>
-            <div className="mt-7 border-t border-[#E5EADF] pt-5">
-              <button type="button" onClick={() => setShowAccessRequest((value) => !value)} className="text-xs text-[#7C8B5F] hover:underline">
-                Already submitted? Request a private ticket link
-              </button>
-              {showAccessRequest && (
-                <form onSubmit={requestAccessLink} className="mt-3 space-y-3 rounded-lg bg-[#FAFBF8] p-4">
-                  <p className="text-xs text-[#76806B]">Enter your ticket reference and the email used to submit it. For privacy, we will not reveal whether the details match.</p>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <label className="text-xs font-medium">Ticket reference<input required value={accessRequest.ticketNumber} onChange={(event) => setAccessRequest((current) => ({ ...current, ticketNumber: event.target.value }))} placeholder="BETA-1001" className={`${inputClass} mt-1.5`} /></label>
-                    <label className="text-xs font-medium">Email address<input required type="email" value={accessRequest.email} onChange={(event) => setAccessRequest((current) => ({ ...current, email: event.target.value }))} className={`${inputClass} mt-1.5`} /></label>
-                  </div>
-                  <button disabled={accessRequesting} className={primaryButton}>{accessRequesting ? 'Requesting…' : 'Email me a link'}</button>
-                  {accessNotice && <p role="status" className="text-xs text-[#69745E]">{accessNotice}</p>}
-                </form>
-              )}
-            </div>
-          </section>
-        ) : (
-          <section className="rounded-2xl border border-[#E5EADF] bg-white p-7 text-center shadow-sm sm:p-10">
-            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-emerald-50 text-emerald-700"><Check className="h-6 w-6" /></div>
-            <h1 className="text-3xl">Thanks for the feedback</h1>
-            <p className="mt-2 text-sm text-[#76806B]">Your ticket has been created.</p>
-            <div className="my-6 rounded-xl bg-[#F7F8F4] p-4">
-              <div className="text-xs text-[#8A9380]">Ticket reference</div>
-              <div className="mt-1 text-2xl font-medium">{ticketNumber}</div>
-            </div>
-            <a href={accessUrl} className={primaryButton}>Continue the conversation <ChevronDown className="h-4 w-4 -rotate-90" /></a>
-            <p className="mt-4 text-xs leading-5 text-[#8A9380]">
-              {testerEmailStatus === 'sent'
-                ? 'A private access link was also sent to your email. Save it somewhere secure; it expires in 90 days.'
-                : 'Email delivery is not currently available. Save your private access link now; it expires in 90 days.'}
-            </p>
-            <button className="mt-5 text-xs text-[#7C8B5F] hover:underline" onClick={() => {
-              setTicketNumber('');
-              setAccessUrl('');
-              setIdempotencyKey(crypto.randomUUID());
-              setForm({
-                submitterName: '',
-                submitterEmail: '',
-                subject: '',
-                description: '',
-                category: 'Bug Report',
-                platform: '',
-                appVersion: '',
-                deviceModel: '',
-                operatingSystem: '',
-              });
-            }}>Submit another item</button>
-          </section>
-        )}
-      </main>
-    </BetaDeskShell>
-  );
-};
-
-const PublicTicket: React.FC<{ ticketToken: string }> = ({ ticketToken }) => {
-  const [ticket, setTicket] = React.useState<BetaTicket | null>(null);
-  const [comments, setComments] = React.useState<BetaComment[]>([]);
-  const [error, setError] = React.useState('');
-  const [message, setMessage] = React.useState('');
-  const [loading, setLoading] = React.useState(true);
-  const [sending, setSending] = React.useState(false);
-
-  const loadTicket = React.useCallback(async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const response = await fetch(`/api/betadesk/tickets/access/${encodeURIComponent(ticketToken)}`);
-      if (!response.ok) throw new Error(await responseError(response, 'This ticket link is invalid or expired.'));
-      const data = await response.json() as { ticket: BetaTicket; comments: BetaComment[] };
-      setTicket(data.ticket);
-      setComments(data.comments);
-    } catch (loadError) {
-      setTicket(null);
-      setError(loadError instanceof Error ? loadError.message : 'Could not load ticket.');
-    } finally {
-      setLoading(false);
-    }
-  }, [ticketToken]);
-
-  React.useEffect(() => { void loadTicket(); }, [loadTicket]);
-
-  const sendReply = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setSending(true);
-    setError('');
-    try {
-      const response = await fetch(`/api/betadesk/tickets/access/${encodeURIComponent(ticketToken)}/comments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message }),
-      });
-      if (!response.ok) throw new Error(await responseError(response, 'Could not send reply.'));
-      setMessage('');
-      await loadTicket();
-    } catch (sendError) {
-      setError(sendError instanceof Error ? sendError.message : 'Could not send reply.');
-    } finally {
-      setSending(false);
-    }
-  };
-
-  return (
-    <BetaDeskShell>
-      <main className="mx-auto max-w-3xl px-4 py-10 sm:py-14">
-        <a href="/feedback/submit" className="mb-4 inline-flex items-center gap-1 text-xs text-[#7C8B5F] hover:underline"><ArrowLeft className="h-3.5 w-3.5" /> Submit other feedback</a>
-        {loading ? <div className="rounded-xl bg-white p-8 text-center text-sm text-[#76806B]">Loading your ticket…</div> : !ticket ? (
-          <section className="rounded-xl border border-rose-200 bg-white p-7 text-center">
-            <LockKeyhole className="mx-auto mb-3 h-8 w-8 text-rose-600" />
-            <h1 className="text-2xl">Ticket link unavailable</h1>
-            <p className="mt-2 text-sm text-[#76806B]">{error}</p>
-          </section>
-        ) : (
-          <section className="overflow-hidden rounded-2xl border border-[#E5EADF] bg-white shadow-sm">
-            <header className="border-b border-[#E5EADF] p-5 sm:p-7">
-              <div className="flex flex-wrap items-center gap-2 text-xs text-[#7C8B5F]"><span>{ticket.ticketNumber}</span><span>·</span><span>{ticket.category}</span><span className={`rounded-full px-2 py-1 ${badgeClass('status', ticket.status)}`}>{ticket.status}</span></div>
-              <h1 className="mt-3 text-2xl sm:text-3xl">{ticket.subject}</h1>
-              <p className="mt-2 text-xs text-[#8A9380]">Last updated {formatDate(ticket.lastActivityAt)}</p>
-            </header>
-            <div className="space-y-4 p-5 sm:p-7">
-              <article className="rounded-lg bg-[#FAFBF8] p-4">
-                <div className="mb-1 text-xs font-medium text-[#69745E]">Your feedback</div>
-                <p className="whitespace-pre-wrap text-sm leading-6">{ticket.description}</p>
-              </article>
-              <div>
-                <h2 className="mb-3 flex items-center gap-2 text-base"><MessageSquare className="h-4 w-4 text-[#7C8B5F]" /> Conversation</h2>
-                <div className="space-y-3">
-                  {comments.map((comment) => (
-                    <article key={comment.id} className={`rounded-lg border p-4 ${comment.authorType === 'admin' ? 'border-[#E5EADF] bg-white' : 'border-transparent bg-[#FAFBF8]'}`}>
-                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                        <span className="font-medium">{comment.authorType === 'admin' ? 'Beta support' : 'You'}</span><time className="text-[#8A9380]">{formatDate(comment.createdAt)}</time>
-                      </div>
-                      <p className="mt-2 whitespace-pre-wrap text-sm leading-6">{comment.message}</p>
-                    </article>
-                  ))}
-                  {comments.length === 0 && <p className="text-sm text-[#8A9380]">There are no replies yet.</p>}
-                </div>
-              </div>
-              {ticket.status === 'Closed' ? (
-                <div className="rounded-lg bg-[#F7F8F4] p-3 text-sm text-[#69745E]">This ticket is closed. Contact support if you need more help.</div>
-              ) : (
-                <form onSubmit={sendReply} className="space-y-2">
-                  <label htmlFor="public-ticket-reply" className="block text-xs font-medium">Add a reply</label>
-                  <textarea id="public-ticket-reply" rows={4} maxLength={3000} required value={message} onChange={(event) => setMessage(event.target.value)} className={inputClass} placeholder="Write your message…" />
-                  {error && <p role="alert" className="text-sm text-rose-700">{error}</p>}
-                  <button disabled={sending || !message.trim()} className={primaryButton}><Send className="h-4 w-4" /> {sending ? 'Sending…' : 'Send reply'}</button>
-                </form>
-              )}
-            </div>
-          </section>
-        )}
-        {!loading && ticket && <button className="mt-4 inline-flex items-center gap-2 text-xs text-[#7C8B5F] hover:underline" onClick={() => void loadTicket()}><RefreshCw className="h-3.5 w-3.5" /> Refresh conversation</button>}
-      </main>
-    </BetaDeskShell>
-  );
-};
