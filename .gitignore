@@ -14,5 +14,6 @@ merakifos_client_responses.xlsx
 # Firebase & Secrets
 *firebase*.json
 !firebase-applet-config.json
+!firebase.customer-operations.json
 *serviceAccount*.json
 .vercel

@@ -8,6 +8,7 @@ import {
 import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 import {
+  createHash,
   createCipheriv,
   createDecipheriv,
   randomBytes,
@@ -15,12 +16,35 @@ import {
 } from 'node:crypto';
 import { OAuth2Client } from 'google-auth-library';
 import type { OutboxEntry, StoredSubmission } from './serverEmailAndExcel.js';
+import type {
+  CustomerOperationsBusiness,
+  CustomerOperationsBusinessMembership,
+  CustomerOperationsBusinessRole,
+  CustomerOperationsActivity,
+  CustomerOperationsCustomer,
+  CustomerOperationsCustomerStatus,
+  CustomerOperationsInternalNote,
+  CustomerOperationsPlatformMembership,
+  CustomerOperationsPlatformRole,
+  CustomerOperationsTicket,
+  CustomerOperationsTicketEvent,
+  CustomerOperationsTicketPriority,
+  CustomerOperationsTicketSource,
+  CustomerOperationsTicketStatus,
+} from './src/types/customerOperations.js';
 
 const SUBMISSIONS_COLLECTION = 'studioSubmissions';
 const OUTBOX_COLLECTION = 'emailOutbox';
 const PROJECTS_COLLECTION = 'studioProjects';
 const STUDIO_INVITES_COLLECTION = 'studioInvites';
 const STUDIO_ADMIN_INVITE_LINKS_COLLECTION = 'studioAdminInviteLinks';
+const CUSTOMER_OPERATIONS_BUSINESSES_COLLECTION = 'customerOperationsBusinesses';
+const CUSTOMER_OPERATIONS_BUSINESS_MEMBERSHIPS_COLLECTION = 'customerOperationsBusinessMemberships';
+const CUSTOMER_OPERATIONS_PLATFORM_MEMBERSHIPS_COLLECTION = 'customerOperationsPlatformMemberships';
+const CUSTOMER_OPERATIONS_AUDIT_COLLECTION = 'customerOperationsAuditLogs';
+const CUSTOMER_OPERATIONS_CUSTOMERS_COLLECTION = 'customerOperationsCustomers';
+const CUSTOMER_OPERATIONS_TICKETS_COLLECTION = 'customerOperationsTickets';
+const CUSTOMER_OPERATIONS_ACTIVITY_COLLECTION = 'customerOperationsActivity';
 const FIRESTORE_BATCH_LIMIT = 450;
 
 export interface ProjectTask {
@@ -215,6 +239,34 @@ function getStudioInvitesCollection() {
 
 function getStudioAdminInviteLinksCollection() {
   return getFirestore(getFirebaseApp()).collection(STUDIO_ADMIN_INVITE_LINKS_COLLECTION);
+}
+
+function getCustomerOperationsBusinessesCollection() {
+  return getFirestore(getFirebaseApp()).collection(CUSTOMER_OPERATIONS_BUSINESSES_COLLECTION);
+}
+
+function getCustomerOperationsBusinessMembershipsCollection() {
+  return getFirestore(getFirebaseApp()).collection(CUSTOMER_OPERATIONS_BUSINESS_MEMBERSHIPS_COLLECTION);
+}
+
+function getCustomerOperationsPlatformMembershipsCollection() {
+  return getFirestore(getFirebaseApp()).collection(CUSTOMER_OPERATIONS_PLATFORM_MEMBERSHIPS_COLLECTION);
+}
+
+function getCustomerOperationsAuditCollection() {
+  return getFirestore(getFirebaseApp()).collection(CUSTOMER_OPERATIONS_AUDIT_COLLECTION);
+}
+
+function getCustomerOperationsCustomersCollection() {
+  return getFirestore(getFirebaseApp()).collection(CUSTOMER_OPERATIONS_CUSTOMERS_COLLECTION);
+}
+
+function getCustomerOperationsTicketsCollection() {
+  return getFirestore(getFirebaseApp()).collection(CUSTOMER_OPERATIONS_TICKETS_COLLECTION);
+}
+
+function getCustomerOperationsActivityCollection() {
+  return getFirestore(getFirebaseApp()).collection(CUSTOMER_OPERATIONS_ACTIVITY_COLLECTION);
 }
 
 function getBetaDeskTicketsCollection() {
@@ -1283,4 +1335,856 @@ export async function consumeBetaDeskRateLimit(
 
 export async function saveBetaDeskNotification(notification: BetaDeskNotification): Promise<void> {
   await getBetaDeskNotificationsCollection().doc(notification.id).set(notification);
+}
+
+const customerOperationsEmailId = (email: string) =>
+  createHash('sha256').update(email.trim().toLowerCase()).digest('hex');
+const customerOperationsBusinessMembershipRef = (businessId: string, email: string) =>
+  getCustomerOperationsBusinessMembershipsCollection()
+    .doc(`${businessId}_${customerOperationsEmailId(email)}`);
+const validTicketTransitions: Record<CustomerOperationsTicketStatus, CustomerOperationsTicketStatus[]> = {
+  new: ['open', 'in_progress', 'waiting_on_customer', 'resolved', 'closed'],
+  open: ['new', 'in_progress', 'waiting_on_customer', 'resolved', 'closed'],
+  in_progress: ['open', 'waiting_on_customer', 'resolved', 'closed'],
+  waiting_on_customer: ['open', 'in_progress', 'resolved', 'closed'],
+  resolved: ['open', 'in_progress', 'closed'],
+  closed: ['open'],
+};
+
+export async function createCustomerOperationsBusiness(input: {
+  name: string;
+  ownerEmail: string;
+  createdBy: string;
+}): Promise<CustomerOperationsBusiness> {
+  const db = getFirestore(getFirebaseApp());
+  const businessId = randomUUID();
+  const now = new Date().toISOString();
+  const business: CustomerOperationsBusiness = {
+    id: businessId,
+    name: input.name,
+    status: 'active',
+    createdAt: now,
+    updatedAt: now,
+    createdBy: input.createdBy,
+  };
+  const membership: CustomerOperationsBusinessMembership = {
+    businessId,
+    businessName: input.name,
+    email: input.ownerEmail,
+    role: 'business_owner',
+    active: true,
+    createdAt: now,
+    invitedBy: input.createdBy,
+  };
+  const businessRef = getCustomerOperationsBusinessesCollection().doc(businessId);
+  const membershipRef = getCustomerOperationsBusinessMembershipsCollection()
+    .doc(`${businessId}_${customerOperationsEmailId(input.ownerEmail)}`);
+  const auditRef = getCustomerOperationsAuditCollection().doc(randomUUID());
+
+  await db.runTransaction(async (transaction) => {
+    const platformMembership = await transaction.get(
+      getCustomerOperationsPlatformMembershipsCollection().doc(customerOperationsEmailId(input.ownerEmail))
+    );
+    if (platformMembership.exists
+      && (platformMembership.data() as CustomerOperationsPlatformMembership).active) {
+      throw new Error('Platform members cannot be assigned as business owners.');
+    }
+    transaction.create(businessRef, business);
+    transaction.create(membershipRef, membership);
+    transaction.create(auditRef, {
+      action: 'business_created',
+      actorEmail: input.createdBy,
+      targetType: 'business',
+      targetId: businessId,
+      metadata: { name: input.name, ownerEmail: input.ownerEmail },
+      createdAt: now,
+    });
+  });
+  return business;
+}
+
+export async function loadCustomerOperationsBusinesses(): Promise<CustomerOperationsBusiness[]> {
+  const snapshot = await getCustomerOperationsBusinessesCollection()
+    .orderBy('createdAt', 'desc')
+    .get();
+  return snapshot.docs.map((document) => document.data() as CustomerOperationsBusiness);
+}
+
+export async function loadCustomerOperationsBusiness(
+  businessId: string
+): Promise<CustomerOperationsBusiness | null> {
+  const document = await getCustomerOperationsBusinessesCollection().doc(businessId).get();
+  return document.exists ? document.data() as CustomerOperationsBusiness : null;
+}
+
+export async function loadCustomerOperationsBusinessMemberships(
+  email: string
+): Promise<CustomerOperationsBusinessMembership[]> {
+  const snapshot = await getCustomerOperationsBusinessMembershipsCollection()
+    .where('email', '==', email.trim().toLowerCase())
+    .get();
+  const memberships = snapshot.docs
+    .map((document) => document.data() as CustomerOperationsBusinessMembership)
+    .filter((membership) => membership.active);
+  const resolved = await Promise.all(memberships.map(async (membership) => {
+    const business = await loadCustomerOperationsBusiness(membership.businessId);
+    if (!business || business.status !== 'active') return null;
+    return { ...membership, businessName: business.name };
+  }));
+  return resolved.filter(
+    (membership): membership is CustomerOperationsBusinessMembership => membership !== null
+  );
+}
+
+export async function loadCustomerOperationsBusinessMembers(
+  businessId: string
+): Promise<CustomerOperationsBusinessMembership[]> {
+  const snapshot = await getCustomerOperationsBusinessMembershipsCollection()
+    .where('businessId', '==', businessId)
+    .get();
+  return snapshot.docs
+    .map((document) => document.data() as CustomerOperationsBusinessMembership)
+    .filter((membership) => membership.active)
+    .sort((left, right) => left.email.localeCompare(right.email));
+}
+
+export async function saveCustomerOperationsBusinessMembership(input: {
+  businessId: string;
+  email: string;
+  role: CustomerOperationsBusinessRole;
+  invitedBy: string;
+}): Promise<CustomerOperationsBusinessMembership> {
+  const db = getFirestore(getFirebaseApp());
+  const businessRef = getCustomerOperationsBusinessesCollection().doc(input.businessId);
+  const membershipRef = getCustomerOperationsBusinessMembershipsCollection()
+    .doc(`${input.businessId}_${customerOperationsEmailId(input.email)}`);
+  const now = new Date().toISOString();
+  const auditRef = getCustomerOperationsAuditCollection().doc(randomUUID());
+  return db.runTransaction(async (transaction) => {
+    const [businessSnapshot, membershipSnapshot, platformMembershipSnapshot] = await Promise.all([
+      transaction.get(businessRef),
+      transaction.get(membershipRef),
+      transaction.get(getCustomerOperationsPlatformMembershipsCollection().doc(customerOperationsEmailId(input.email))),
+    ]);
+    const business = businessSnapshot.exists
+      ? businessSnapshot.data() as CustomerOperationsBusiness
+      : null;
+    if (!business || business.status !== 'active') {
+      throw new Error('Business does not exist or is inactive.');
+    }
+    if (platformMembershipSnapshot.exists
+      && (platformMembershipSnapshot.data() as CustomerOperationsPlatformMembership).active) {
+      throw new Error('Platform members cannot be assigned business membership.');
+    }
+    if (membershipSnapshot.exists) {
+      const current = membershipSnapshot.data() as CustomerOperationsBusinessMembership;
+      if (current.active && current.role === 'business_owner') {
+        throw new Error('An existing business owner cannot be downgraded.');
+      }
+    }
+    const membership: CustomerOperationsBusinessMembership = {
+      businessId: input.businessId,
+      businessName: business.name,
+      email: input.email.trim().toLowerCase(),
+      role: input.role,
+      active: true,
+      createdAt: now,
+      invitedBy: input.invitedBy,
+    };
+    const previous = membershipSnapshot.exists
+      ? membershipSnapshot.data() as CustomerOperationsBusinessMembership
+      : null;
+    transaction.set(membershipRef, membership);
+    transaction.create(auditRef, {
+      action: previous?.active ? 'business_member_role_changed' : 'business_member_granted',
+      actorEmail: input.invitedBy,
+      targetType: 'business_membership',
+      targetId: `${input.businessId}:${membership.email}`,
+      metadata: {
+        role: input.role,
+        ...(previous?.role ? { previousRole: previous.role } : {}),
+      },
+      createdAt: now,
+    });
+    return membership;
+  });
+}
+
+export async function deactivateCustomerOperationsBusinessMembership(input: {
+  businessId: string;
+  email: string;
+  actorEmail: string;
+}): Promise<void> {
+  const db = getFirestore(getFirebaseApp());
+  const membershipRef = getCustomerOperationsBusinessMembershipsCollection()
+    .doc(`${input.businessId}_${customerOperationsEmailId(input.email)}`);
+  const auditRef = getCustomerOperationsAuditCollection().doc(randomUUID());
+  const now = new Date().toISOString();
+  await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(membershipRef);
+    if (!snapshot.exists || !(snapshot.data() as CustomerOperationsBusinessMembership).active) {
+      throw new Error('Business membership was not found.');
+    }
+    const membership = snapshot.data() as CustomerOperationsBusinessMembership;
+    if (membership.role === 'business_owner') {
+      throw new Error('Business owner membership cannot be deactivated here.');
+    }
+    transaction.update(membershipRef, { active: false });
+    transaction.create(auditRef, {
+      action: 'business_member_deactivated',
+      actorEmail: input.actorEmail,
+      targetType: 'business_membership',
+      targetId: `${input.businessId}:${membership.email}`,
+      metadata: { role: membership.role },
+      createdAt: now,
+    });
+  });
+}
+
+export async function loadCustomerOperationsPlatformMembership(
+  email: string
+): Promise<CustomerOperationsPlatformMembership | null> {
+  const document = await getCustomerOperationsPlatformMembershipsCollection()
+    .doc(customerOperationsEmailId(email))
+    .get();
+  if (!document.exists) return null;
+  const membership = document.data() as CustomerOperationsPlatformMembership;
+  return membership.active ? membership : null;
+}
+
+export async function loadCustomerOperationsPlatformMemberships():
+Promise<CustomerOperationsPlatformMembership[]> {
+  const snapshot = await getCustomerOperationsPlatformMembershipsCollection()
+    .orderBy('createdAt', 'desc')
+    .get();
+  return snapshot.docs
+    .map((document) => document.data() as CustomerOperationsPlatformMembership)
+    .filter((membership) => membership.active);
+}
+
+export async function saveCustomerOperationsPlatformMembership(input: {
+  email: string;
+  role: CustomerOperationsPlatformRole;
+  invitedBy: string;
+}): Promise<CustomerOperationsPlatformMembership> {
+  const db = getFirestore(getFirebaseApp());
+  const membership: CustomerOperationsPlatformMembership = {
+    email: input.email.trim().toLowerCase(),
+    role: input.role,
+    active: true,
+    createdAt: new Date().toISOString(),
+    invitedBy: input.invitedBy,
+  };
+  const membershipRef = getCustomerOperationsPlatformMembershipsCollection()
+    .doc(customerOperationsEmailId(membership.email));
+  const businessMembershipQuery = getCustomerOperationsBusinessMembershipsCollection()
+    .where('email', '==', membership.email);
+  const auditRef = getCustomerOperationsAuditCollection().doc(randomUUID());
+  await db.runTransaction(async (transaction) => {
+    const [previousSnapshot, businessMemberships] = await Promise.all([
+      transaction.get(membershipRef),
+      transaction.get(businessMembershipQuery),
+    ]);
+    if (businessMemberships.docs.some((document) =>
+      (document.data() as CustomerOperationsBusinessMembership).active
+    )) {
+      throw new Error('Business members cannot be granted platform support access.');
+    }
+    const previous = previousSnapshot.exists
+      ? previousSnapshot.data() as CustomerOperationsPlatformMembership
+      : null;
+    transaction.set(membershipRef, membership);
+    transaction.create(auditRef, {
+      action: previous?.active ? 'platform_member_updated' : 'platform_member_granted',
+      actorEmail: input.invitedBy,
+      targetType: 'platform_member',
+      targetId: membership.email,
+      metadata: {
+        role: input.role,
+        ...(previous?.role ? { previousRole: previous.role } : {}),
+      },
+      createdAt: membership.createdAt,
+    });
+  });
+  return membership;
+}
+
+export async function deactivateCustomerOperationsPlatformMembership(
+  email: string,
+  actorEmail: string
+): Promise<void> {
+  const db = getFirestore(getFirebaseApp());
+  const membershipRef = getCustomerOperationsPlatformMembershipsCollection()
+    .doc(customerOperationsEmailId(email));
+  const auditRef = getCustomerOperationsAuditCollection().doc(randomUUID());
+  const now = new Date().toISOString();
+  await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(membershipRef);
+    if (!snapshot.exists || !(snapshot.data() as CustomerOperationsPlatformMembership).active) {
+      throw new Error('Platform membership was not found.');
+    }
+    const membership = snapshot.data() as CustomerOperationsPlatformMembership;
+    transaction.update(membershipRef, { active: false });
+    transaction.create(auditRef, {
+      action: 'platform_member_deactivated',
+      actorEmail,
+      targetType: 'platform_member',
+      targetId: email,
+      metadata: { role: membership.role },
+      createdAt: now,
+    });
+  });
+}
+
+export async function createCustomerOperationsCustomer(input: {
+  businessId: string;
+  name: string;
+  email: string;
+  phone: string;
+  whatsapp: string;
+  company: string;
+  tags: string[];
+  assignedOwner: string;
+  actorEmail: string;
+}): Promise<CustomerOperationsCustomer> {
+  const db = getFirestore(getFirebaseApp());
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  const customer: CustomerOperationsCustomer = {
+    id,
+    businessId: input.businessId,
+    name: input.name,
+    email: input.email,
+    phone: input.phone,
+    whatsapp: input.whatsapp,
+    company: input.company,
+    status: 'active',
+    tags: input.tags,
+    assignedOwner: input.assignedOwner,
+    nameSearch: input.name.toLocaleLowerCase(),
+    emailSearch: input.email.toLocaleLowerCase(),
+    companySearch: input.company.toLocaleLowerCase(),
+    createdAt: now,
+    updatedAt: now,
+    lastInteractionAt: null,
+    createdBy: input.actorEmail,
+  };
+  const customerRef = getCustomerOperationsCustomersCollection().doc(id);
+  const activityRef = getCustomerOperationsActivityCollection().doc(randomUUID());
+  await db.runTransaction(async (transaction) => {
+    const businessRef = getCustomerOperationsBusinessesCollection().doc(input.businessId);
+    const reads = [transaction.get(businessRef)];
+    if (input.assignedOwner) reads.push(transaction.get(customerOperationsBusinessMembershipRef(input.businessId, input.assignedOwner)));
+    const snapshots = await Promise.all(reads);
+    const business = snapshots[0];
+    if (!business.exists || (business.data() as CustomerOperationsBusiness).status !== 'active') {
+      throw new Error('Business does not exist or is inactive.');
+    }
+    if (input.assignedOwner && (!snapshots[1]?.exists
+      || !(snapshots[1].data() as CustomerOperationsBusinessMembership).active)) {
+      throw new Error('Assigned owner is not an active member of this business.');
+    }
+    transaction.create(customerRef, customer);
+    transaction.create(activityRef, {
+      id: activityRef.id,
+      businessId: input.businessId,
+      customerId: id,
+      ticketId: null,
+      action: 'customer_created',
+      actorEmail: input.actorEmail,
+      createdAt: now,
+    } satisfies CustomerOperationsActivity);
+  });
+  return customer;
+}
+
+export async function loadCustomerOperationsCustomer(
+  businessId: string,
+  customerId: string
+): Promise<CustomerOperationsCustomer | null> {
+  const document = await getCustomerOperationsCustomersCollection().doc(customerId).get();
+  if (!document.exists) return null;
+  const customer = document.data() as CustomerOperationsCustomer;
+  return customer.businessId === businessId ? customer : null;
+}
+
+export async function listCustomerOperationsCustomers(input: {
+  businessId: string;
+  limit: number;
+  cursor?: { updatedAt: string; id: string };
+  search?: string;
+  status?: CustomerOperationsCustomerStatus;
+}): Promise<{ items: CustomerOperationsCustomer[]; nextCursor: string | null }> {
+  const collection = getCustomerOperationsCustomersCollection();
+  const search = input.search?.trim().toLocaleLowerCase() || '';
+  if (search) {
+    const fields = ['nameSearch', 'emailSearch', 'companySearch'] as const;
+    const snapshots = await Promise.all(fields.map((field) => collection
+      .where('businessId', '==', input.businessId)
+      .where(field, '>=', search)
+      .where(field, '<=', `${search}\uf8ff`)
+      .orderBy(field)
+      .limit(input.limit)
+      .get()));
+    const unique = new Map<string, CustomerOperationsCustomer>();
+    for (const snapshot of snapshots) {
+      for (const document of snapshot.docs) {
+        const customer = document.data() as CustomerOperationsCustomer;
+        if (!input.status || customer.status === input.status) unique.set(customer.id, customer);
+      }
+    }
+    const items = [...unique.values()]
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, input.limit);
+    return { items, nextCursor: null };
+  }
+
+  let query = collection.where('businessId', '==', input.businessId)
+    .orderBy('updatedAt', 'desc')
+    .orderBy('id', 'desc');
+  if (input.status) query = query.where('status', '==', input.status) as typeof query;
+  if (input.cursor) query = query.startAfter(input.cursor.updatedAt, input.cursor.id) as typeof query;
+  const snapshot = await query.limit(input.limit + 1).get();
+  const documents = snapshot.docs.slice(0, input.limit);
+  const items = documents.map((document) => document.data() as CustomerOperationsCustomer);
+  const last = documents.at(-1)?.data() as CustomerOperationsCustomer | undefined;
+  return {
+    items,
+    nextCursor: snapshot.docs.length > input.limit && last
+      ? Buffer.from(JSON.stringify({ updatedAt: last.updatedAt, id: last.id })).toString('base64url')
+      : null,
+  };
+}
+
+export async function updateCustomerOperationsCustomer(input: {
+  businessId: string;
+  customerId: string;
+  changes: Partial<Pick<CustomerOperationsCustomer, 'name' | 'email' | 'phone' | 'whatsapp' | 'company' | 'status' | 'tags' | 'assignedOwner'>>;
+  actorEmail: string;
+}): Promise<CustomerOperationsCustomer | null> {
+  const db = getFirestore(getFirebaseApp());
+  const customerRef = getCustomerOperationsCustomersCollection().doc(input.customerId);
+  const activityRef = getCustomerOperationsActivityCollection().doc(randomUUID());
+  const now = new Date().toISOString();
+  return db.runTransaction(async (transaction) => {
+    const reads = [transaction.get(customerRef)];
+    if (input.changes.assignedOwner) {
+      reads.push(transaction.get(customerOperationsBusinessMembershipRef(input.businessId, input.changes.assignedOwner)));
+    }
+    const snapshots = await Promise.all(reads);
+    const snapshot = snapshots[0];
+    if (!snapshot.exists) return null;
+    const current = snapshot.data() as CustomerOperationsCustomer;
+    if (current.businessId !== input.businessId) return null;
+    if (input.changes.assignedOwner && (!snapshots[1]?.exists
+      || !(snapshots[1].data() as CustomerOperationsBusinessMembership).active)) {
+      throw new Error('Assigned owner is not an active member of this business.');
+    }
+    const next = {
+      ...current,
+      ...input.changes,
+      ...(input.changes.name !== undefined ? { nameSearch: input.changes.name.toLocaleLowerCase() } : {}),
+      ...(input.changes.email !== undefined ? { emailSearch: input.changes.email.toLocaleLowerCase() } : {}),
+      ...(input.changes.company !== undefined ? { companySearch: input.changes.company.toLocaleLowerCase() } : {}),
+      updatedAt: now,
+    };
+    const changedFields = Object.keys(input.changes).filter((key) =>
+      current[key as keyof CustomerOperationsCustomer] !== input.changes[key as keyof typeof input.changes]
+    );
+    if (!changedFields.length) return current;
+    transaction.update(customerRef, next);
+    transaction.create(activityRef, {
+      id: activityRef.id,
+      businessId: input.businessId,
+      customerId: input.customerId,
+      ticketId: null,
+      action: 'customer_updated',
+      actorEmail: input.actorEmail,
+      createdAt: now,
+    } satisfies CustomerOperationsActivity);
+    return next;
+  });
+}
+
+export async function listCustomerOperationsCustomerActivity(
+  businessId: string,
+  customerId: string
+): Promise<CustomerOperationsActivity[]> {
+  const snapshot = await getCustomerOperationsActivityCollection()
+    .where('businessId', '==', businessId)
+    .where('customerId', '==', customerId)
+    .orderBy('createdAt', 'desc')
+    .limit(100)
+    .get();
+  return snapshot.docs.map((document) => document.data() as CustomerOperationsActivity);
+}
+
+export async function addCustomerOperationsCustomerNote(input: {
+  businessId: string;
+  customerId: string;
+  body: string;
+  authorEmail: string;
+}): Promise<CustomerOperationsInternalNote | null> {
+  const db = getFirestore(getFirebaseApp());
+  const customerRef = getCustomerOperationsCustomersCollection().doc(input.customerId);
+  const noteRef = customerRef.collection('internalNotes').doc(randomUUID());
+  const activityRef = getCustomerOperationsActivityCollection().doc(randomUUID());
+  const now = new Date().toISOString();
+  const note: CustomerOperationsInternalNote = {
+    id: noteRef.id,
+    body: input.body,
+    authorEmail: input.authorEmail,
+    createdAt: now,
+  };
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(customerRef);
+    if (!snapshot.exists || (snapshot.data() as CustomerOperationsCustomer).businessId !== input.businessId) {
+      return null;
+    }
+    transaction.create(noteRef, note);
+    transaction.update(customerRef, { updatedAt: now, lastInteractionAt: now });
+    transaction.create(activityRef, {
+      id: activityRef.id,
+      businessId: input.businessId,
+      customerId: input.customerId,
+      ticketId: null,
+      action: 'customer_internal_note_added',
+      actorEmail: input.authorEmail,
+      createdAt: now,
+    } satisfies CustomerOperationsActivity);
+    return note;
+  });
+}
+
+export async function listCustomerOperationsCustomerNotes(
+  businessId: string,
+  customerId: string
+): Promise<CustomerOperationsInternalNote[] | null> {
+  const customer = await loadCustomerOperationsCustomer(businessId, customerId);
+  if (!customer) return null;
+  const snapshot = await getCustomerOperationsCustomersCollection().doc(customerId)
+    .collection('internalNotes')
+    .orderBy('createdAt', 'desc')
+    .limit(100)
+    .get();
+  return snapshot.docs.map((document) => document.data() as CustomerOperationsInternalNote);
+}
+
+export async function createCustomerOperationsTicket(input: {
+  businessId: string;
+  customerId: string;
+  subject: string;
+  description: string;
+  category: string;
+  tags: string[];
+  priority: CustomerOperationsTicketPriority;
+  assignedAgent: string;
+  assignedTeam: string;
+  source: CustomerOperationsTicketSource;
+  actorEmail: string;
+}): Promise<CustomerOperationsTicket> {
+  const db = getFirestore(getFirebaseApp());
+  const ticketId = randomUUID();
+  const now = new Date().toISOString();
+  const ticketRef = getCustomerOperationsTicketsCollection().doc(ticketId);
+  const eventRef = ticketRef.collection('events').doc(randomUUID());
+  const activityRef = getCustomerOperationsActivityCollection().doc(randomUUID());
+  const counterRef = getCustomerOperationsBusinessesCollection().doc(input.businessId)
+    .collection('counters').doc('tickets');
+  return db.runTransaction(async (transaction) => {
+    const reads = [
+      transaction.get(getCustomerOperationsBusinessesCollection().doc(input.businessId)),
+      transaction.get(getCustomerOperationsCustomersCollection().doc(input.customerId)),
+      transaction.get(counterRef),
+    ];
+    if (input.assignedAgent) {
+      reads.push(transaction.get(customerOperationsBusinessMembershipRef(input.businessId, input.assignedAgent)));
+    }
+    const [businessSnapshot, customerSnapshot, counterSnapshot, assignedMemberSnapshot] = await Promise.all(reads);
+    const business = businessSnapshot.exists
+      ? businessSnapshot.data() as CustomerOperationsBusiness
+      : null;
+    const customer = customerSnapshot.exists
+      ? customerSnapshot.data() as CustomerOperationsCustomer
+      : null;
+    if (!business || business.status !== 'active') {
+      throw new Error('Business does not exist or is inactive.');
+    }
+    if (!customer || customer.businessId !== input.businessId || customer.status !== 'active') {
+      throw new Error('Customer does not exist in this business.');
+    }
+    if (input.assignedAgent && (!assignedMemberSnapshot?.exists
+      || !(assignedMemberSnapshot.data() as CustomerOperationsBusinessMembership).active)) {
+      throw new Error('Assigned agent is not an active member of this business.');
+    }
+    const currentCount = counterSnapshot.exists
+      ? Number(counterSnapshot.get('count')) || 1000
+      : 1000;
+    const nextCount = currentCount + 1;
+    const ticket: CustomerOperationsTicket = {
+      id: ticketId,
+      businessId: input.businessId,
+      ticketNumber: `TKT-${nextCount}`,
+      ticketNumberSearch: `tkt-${nextCount}`,
+      customerId: customer.id,
+      customerName: customer.name,
+      customerEmail: customer.email,
+      subject: input.subject,
+      subjectSearch: input.subject.toLocaleLowerCase(),
+      description: input.description,
+      category: input.category,
+      tags: input.tags,
+      priority: input.priority,
+      status: 'new',
+      assignedAgent: input.assignedAgent,
+      assignedTeam: input.assignedTeam,
+      source: input.source,
+      createdAt: now,
+      updatedAt: now,
+      firstResponseAt: null,
+      resolvedAt: null,
+      createdBy: input.actorEmail,
+    };
+    transaction.set(counterRef, { count: nextCount });
+    transaction.create(ticketRef, ticket);
+    transaction.create(eventRef, {
+      id: eventRef.id,
+      action: 'ticket_created',
+      actorEmail: input.actorEmail,
+      changes: {},
+      createdAt: now,
+    } satisfies CustomerOperationsTicketEvent);
+    transaction.update(getCustomerOperationsCustomersCollection().doc(customer.id), {
+      updatedAt: now,
+      lastInteractionAt: now,
+    });
+    transaction.create(activityRef, {
+      id: activityRef.id,
+      businessId: input.businessId,
+      customerId: customer.id,
+      ticketId,
+      action: 'ticket_created',
+      actorEmail: input.actorEmail,
+      createdAt: now,
+    } satisfies CustomerOperationsActivity);
+    return ticket;
+  });
+}
+
+export async function loadCustomerOperationsTicket(
+  businessId: string,
+  ticketId: string
+): Promise<CustomerOperationsTicket | null> {
+  const document = await getCustomerOperationsTicketsCollection().doc(ticketId).get();
+  if (!document.exists) return null;
+  const ticket = document.data() as CustomerOperationsTicket;
+  return ticket.businessId === businessId ? ticket : null;
+}
+
+export async function listCustomerOperationsTickets(input: {
+  businessId: string;
+  limit: number;
+  cursor?: { updatedAt: string; id: string };
+  search?: string;
+  customerId?: string;
+  status?: CustomerOperationsTicketStatus;
+  priority?: CustomerOperationsTicketPriority;
+}): Promise<{ items: CustomerOperationsTicket[]; nextCursor: string | null }> {
+  const collection = getCustomerOperationsTicketsCollection();
+  const search = input.search?.trim().toLocaleLowerCase() || '';
+  if (search) {
+    const snapshots = await Promise.all(['subjectSearch', 'ticketNumberSearch'].map((field) => {
+      let query = collection.where('businessId', '==', input.businessId);
+      if (input.customerId) query = query.where('customerId', '==', input.customerId) as typeof query;
+      return query.where(field, '>=', search)
+        .where(field, '<=', `${search}\uf8ff`)
+        .orderBy(field)
+        .limit(input.limit)
+        .get();
+    }));
+    const unique = new Map<string, CustomerOperationsTicket>();
+    for (const snapshot of snapshots) {
+      for (const document of snapshot.docs) {
+        const ticket = document.data() as CustomerOperationsTicket;
+        if ((!input.status || ticket.status === input.status)
+          && (!input.priority || ticket.priority === input.priority)) {
+          unique.set(ticket.id, ticket);
+        }
+      }
+    }
+    return {
+      items: [...unique.values()].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, input.limit),
+      nextCursor: null,
+    };
+  }
+
+  let query = collection.where('businessId', '==', input.businessId)
+    .orderBy('updatedAt', 'desc')
+    .orderBy('id', 'desc');
+  if (input.customerId) query = query.where('customerId', '==', input.customerId) as typeof query;
+  if (input.status) query = query.where('status', '==', input.status) as typeof query;
+  if (input.priority) query = query.where('priority', '==', input.priority) as typeof query;
+  if (input.cursor) query = query.startAfter(input.cursor.updatedAt, input.cursor.id) as typeof query;
+  const snapshot = await query.limit(input.limit + 1).get();
+  const documents = snapshot.docs.slice(0, input.limit);
+  const items = documents.map((document) => document.data() as CustomerOperationsTicket);
+  const last = documents.at(-1)?.data() as CustomerOperationsTicket | undefined;
+  return {
+    items,
+    nextCursor: snapshot.docs.length > input.limit && last
+      ? Buffer.from(JSON.stringify({ updatedAt: last.updatedAt, id: last.id })).toString('base64url')
+      : null,
+  };
+}
+
+export async function updateCustomerOperationsTicket(input: {
+  businessId: string;
+  ticketId: string;
+  changes: Partial<Pick<CustomerOperationsTicket, 'subject' | 'category' | 'tags' | 'priority' | 'status' | 'assignedAgent' | 'assignedTeam'>>;
+  actorEmail: string;
+}): Promise<CustomerOperationsTicket | null> {
+  const db = getFirestore(getFirebaseApp());
+  const ticketRef = getCustomerOperationsTicketsCollection().doc(input.ticketId);
+  const eventRef = ticketRef.collection('events').doc(randomUUID());
+  const activityRef = getCustomerOperationsActivityCollection().doc(randomUUID());
+  const customerRef = getCustomerOperationsCustomersCollection();
+  const now = new Date().toISOString();
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(ticketRef);
+    if (!snapshot.exists) return null;
+    const current = snapshot.data() as CustomerOperationsTicket;
+    if (current.businessId !== input.businessId) return null;
+    if (input.changes.status && input.changes.status !== current.status
+      && !validTicketTransitions[current.status].includes(input.changes.status)) {
+      throw new Error('Ticket status transition is not allowed.');
+    }
+    if (input.changes.assignedAgent) {
+      const membershipSnapshot = await transaction.get(
+        customerOperationsBusinessMembershipRef(input.businessId, input.changes.assignedAgent)
+      );
+      if (!membershipSnapshot.exists || !(membershipSnapshot.data() as CustomerOperationsBusinessMembership).active) {
+        throw new Error('Assigned agent is not an active member of this business.');
+      }
+    }
+    const changedFields = Object.keys(input.changes).filter((key) =>
+      current[key as keyof CustomerOperationsTicket] !== input.changes[key as keyof typeof input.changes]
+    );
+    if (!changedFields.length) return current;
+    const changes: CustomerOperationsTicketEvent['changes'] = {};
+    for (const field of changedFields) {
+      const key = field as keyof typeof input.changes;
+      changes[field] = {
+        from: Array.isArray(current[key as keyof CustomerOperationsTicket])
+          ? (current[key as keyof CustomerOperationsTicket] as string[]).join(', ')
+          : String(current[key as keyof CustomerOperationsTicket] ?? ''),
+        to: Array.isArray(input.changes[key])
+          ? (input.changes[key] as string[]).join(', ')
+          : String(input.changes[key] ?? ''),
+      };
+    }
+    const next: CustomerOperationsTicket = {
+      ...current,
+      ...input.changes,
+      ...(input.changes.subject !== undefined ? { subjectSearch: input.changes.subject.toLocaleLowerCase() } : {}),
+      updatedAt: now,
+      ...(input.changes.status === 'resolved' && current.status !== 'resolved' ? { resolvedAt: now } : {}),
+      ...(input.changes.status && input.changes.status !== 'resolved' && current.status === 'resolved' ? { resolvedAt: null } : {}),
+    };
+    transaction.set(ticketRef, next);
+    transaction.create(eventRef, {
+      id: eventRef.id,
+      action: 'ticket_updated',
+      actorEmail: input.actorEmail,
+      changes,
+      createdAt: now,
+    } satisfies CustomerOperationsTicketEvent);
+    transaction.update(customerRef.doc(current.customerId), {
+      updatedAt: now,
+      lastInteractionAt: now,
+    });
+    transaction.create(activityRef, {
+      id: activityRef.id,
+      businessId: input.businessId,
+      customerId: current.customerId,
+      ticketId: current.id,
+      action: 'ticket_updated',
+      actorEmail: input.actorEmail,
+      createdAt: now,
+    } satisfies CustomerOperationsActivity);
+    return next;
+  });
+}
+
+export async function addCustomerOperationsTicketNote(input: {
+  businessId: string;
+  ticketId: string;
+  body: string;
+  authorEmail: string;
+}): Promise<CustomerOperationsInternalNote | null> {
+  const db = getFirestore(getFirebaseApp());
+  const ticketRef = getCustomerOperationsTicketsCollection().doc(input.ticketId);
+  const customerRef = getCustomerOperationsCustomersCollection();
+  const noteRef = ticketRef.collection('internalNotes').doc(randomUUID());
+  const eventRef = ticketRef.collection('events').doc(randomUUID());
+  const activityRef = getCustomerOperationsActivityCollection().doc(randomUUID());
+  const now = new Date().toISOString();
+  const note: CustomerOperationsInternalNote = {
+    id: noteRef.id,
+    body: input.body,
+    authorEmail: input.authorEmail,
+    createdAt: now,
+  };
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(ticketRef);
+    if (!snapshot.exists) return null;
+    const ticket = snapshot.data() as CustomerOperationsTicket;
+    if (ticket.businessId !== input.businessId) return null;
+    transaction.create(noteRef, note);
+    transaction.create(eventRef, {
+      id: eventRef.id,
+      action: 'internal_note_added',
+      actorEmail: input.authorEmail,
+      changes: {},
+      createdAt: now,
+    } satisfies CustomerOperationsTicketEvent);
+    transaction.update(customerRef.doc(ticket.customerId), { updatedAt: now, lastInteractionAt: now });
+    transaction.create(activityRef, {
+      id: activityRef.id,
+      businessId: input.businessId,
+      customerId: ticket.customerId,
+      ticketId: input.ticketId,
+      action: 'ticket_internal_note_added',
+      actorEmail: input.authorEmail,
+      createdAt: now,
+    } satisfies CustomerOperationsActivity);
+    return note;
+  });
+}
+
+export async function listCustomerOperationsTicketNotes(
+  businessId: string,
+  ticketId: string
+): Promise<CustomerOperationsInternalNote[] | null> {
+  const ticket = await loadCustomerOperationsTicket(businessId, ticketId);
+  if (!ticket) return null;
+  const snapshot = await getCustomerOperationsTicketsCollection().doc(ticketId)
+    .collection('internalNotes')
+    .orderBy('createdAt', 'desc')
+    .limit(100)
+    .get();
+  return snapshot.docs.map((document) => document.data() as CustomerOperationsInternalNote);
+}
+
+export async function listCustomerOperationsTicketEvents(
+  businessId: string,
+  ticketId: string
+): Promise<CustomerOperationsTicketEvent[] | null> {
+  const ticket = await loadCustomerOperationsTicket(businessId, ticketId);
+  if (!ticket) return null;
+  const snapshot = await getCustomerOperationsTicketsCollection().doc(ticketId)
+    .collection('events')
+    .orderBy('createdAt', 'desc')
+    .limit(100)
+    .get();
+  return snapshot.docs.map((document) => document.data() as CustomerOperationsTicketEvent);
 }
