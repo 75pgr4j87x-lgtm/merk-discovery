@@ -1,8 +1,10 @@
 import React from 'react';
-import { Building2, CircleUserRound, LayoutDashboard, Shield, Users } from 'lucide-react';
+import { Building2, CircleUserRound, Inbox, LayoutDashboard, Phone, Shield, Users } from 'lucide-react';
 import { User } from 'firebase/auth';
 import { GoogleSignInButton } from './GoogleSignInButton';
 import { CustomerOperationsBusinessWorkspace } from './CustomerOperationsBusinessWorkspace';
+import { CustomerOperationsInbox } from './CustomerOperationsInbox';
+import { CustomerOperationsCallLogs } from './CustomerOperationsCallLogs';
 import { auth, initAuth } from '../services/auth';
 import type {
   CustomerOperationsAccess,
@@ -10,7 +12,7 @@ import type {
   CustomerOperationsPlatformMembership,
 } from '../types/customerOperations';
 
-type Section = 'overview' | 'businesses' | 'team' | 'customers' | 'tickets';
+type Section = 'overview' | 'businesses' | 'team' | 'customers' | 'tickets' | 'inbox' | 'calls';
 type Workspace = { id: string; label: string; role: string };
 
 async function customerOperationsFetch(path: string, init: RequestInit = {}) {
@@ -212,6 +214,8 @@ export const CustomerOperationsApp: React.FC = () => {
     ...(isBusinessWorkspace ? [
       { id: 'customers' as const, label: 'Customers', icon: <CircleUserRound size={17} /> },
       { id: 'tickets' as const, label: 'Tickets', icon: <Shield size={17} /> },
+      { id: 'inbox' as const, label: 'Inbox', icon: <Inbox size={17} /> },
+      { id: 'calls' as const, label: 'Call logs', icon: <Phone size={17} /> },
     ] : []),
   ];
 
@@ -304,7 +308,9 @@ export const CustomerOperationsApp: React.FC = () => {
                     {section === 'overview' ? selectedWorkspace?.label
                       : section === 'businesses' ? 'Businesses'
                         : section === 'team' ? 'Support agents'
-                          : section === 'customers' ? 'Customers' : 'Tickets'}
+                          : section === 'customers' ? 'Customers'
+                            : section === 'tickets' ? 'Tickets'
+                              : section === 'inbox' ? 'Inbox' : 'Call logs'}
                   </h1>
                   <p className="mt-1 text-sm capitalize text-slate-500">
                     {selectedWorkspace?.role || 'Workspace access'}
@@ -320,9 +326,9 @@ export const CustomerOperationsApp: React.FC = () => {
 
               {section === 'overview' && (
                 <section className="rounded-xl border border-slate-200 bg-white p-6 sm:p-8">
-                  <h2 className="text-base font-semibold">Foundation phase</h2>
+                  <h2 className="text-base font-semibold">Customer Operations workspace</h2>
                   <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-                    Workspace access and tenant boundaries are in place. Customer records, tickets, conversations, and operational metrics will be added in their respective phases; no sample data or placeholder metrics are shown.
+                    Manage business-scoped customers, tickets, conversations, and call activity. Email delivery depends on local SMTP configuration; WhatsApp remains disabled until an official provider is configured.
                   </p>
                   {isBusinessWorkspace && (
                     <p className="mt-4 rounded-lg bg-slate-50 px-4 py-3 text-sm text-slate-600">
@@ -412,6 +418,12 @@ export const CustomerOperationsApp: React.FC = () => {
                   panel={section}
                   onNavigate={setSection}
                 />
+              )}
+              {isBusinessWorkspace && selectedBusinessId && section === 'inbox' && (
+                <CustomerOperationsInbox key={selectedBusinessId} businessId={selectedBusinessId} />
+              )}
+              {isBusinessWorkspace && selectedBusinessId && section === 'calls' && (
+                <CustomerOperationsCallLogs key={selectedBusinessId} businessId={selectedBusinessId} />
               )}
             </div>
           </main>

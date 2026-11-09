@@ -22,6 +22,9 @@ Firestore is schema-on-write, so phases add collections rather than SQL migratio
 | `customerOperationsCustomers/{id}/internalNotes` | Private customer notes | Parent customer business |
 | `customerOperationsTickets/{id}/internalNotes` | Private ticket notes | Parent ticket business |
 | `customerOperationsTickets/{id}/events` | Append-only ticket changes and lifecycle history | Parent ticket business |
+| `customerOperationsConversations` | Inbox threads linked to one customer and optionally one ticket | Exactly one `businessId` |
+| `customerOperationsConversations/{id}/messages` | Customer-visible and internal-only conversation messages | Parent conversation business |
+| `customerOperationsCallLogs` | Manually recorded inbound/outbound call activity | Exactly one `businessId` |
 | `customerOperationsBusinesses/{id}/counters/tickets` | Transactional per-business ticket sequence | Parent business |
 
 Business membership roles are `business_owner`, `business_manager`, and `business_support_agent`. The only platform membership role currently grantable is `platform_support_agent`; `platform_super_admin` is derived exclusively from the configured owner identity and cannot be granted through an API. A business is created with an initial Business Owner membership in the same Firestore transaction.
@@ -39,9 +42,14 @@ Ticket references are sequential within a business (`TKT-1001`, etc.) and alloca
 - Platform Support Agents do not inherit business workspace access.
 - Client Firestore access remains default-deny. Customer Operations persistence is through server APIs using the Admin SDK.
 - Grants and revocations are written with their corresponding append-only audit record in a Firestore transaction.
-- Internal customer and ticket notes are stored separately from customer profiles and tickets and are returned only from authenticated business-agent routes. The activity stream records that a note was added, never its body. There are no customer-facing APIs in this phase.
+- Internal customer and ticket notes are stored separately from customer profiles and tickets and are returned only from authenticated business-agent routes. Conversation messages have explicit `customer` or `internal` visibility; the public customer link can only load or create customer-visible messages.
+- Customer conversation links use 256-bit random tokens, store only the SHA-256 token hash, expire after seven days, and can be rotated or revoked by a business member. The token is placed in the URL fragment and sent to the server only in a request header. Public responses omit customer email, internal messages, and token metadata.
+- Outbound conversation email uses the server's SMTP configuration, writes delivery status to the message, and supports retrying failed sends. Email contains the customer-visible message and the expiring secure conversation link; internal messages are never delivered externally.
+- WhatsApp uses a vendor-neutral `CustomerOperationsWhatsAppProvider` contract for official providers. No provider or credentials are selected/configured in this phase, so sending is explicitly unavailable rather than routed through an unofficial gateway.
+- Call logs are append-only business-scoped records. They store direction, outcome, duration, phone number, summary, and the authenticated agent; call recording is not enabled.
 - Ticket events retain status, assignment, priority, tag, and other permitted field changes without overwriting prior event history. Resolution time is set on resolve and cleared on reopen; the event history records the status transitions.
-- Customer and ticket lists are limited and cursor-paginated. Prefix searches are tenant-scoped; Firestore composite indexes for the actual list/search patterns are declared in `firestore.indexes.json`.
+- Customer, ticket, and conversation lists are limited and cursor-paginated. Prefix searches are tenant-scoped; Firestore composite indexes for the actual list/search patterns are declared in `firestore.indexes.json`.
+- Phase 3 attachment upload/storage is deferred; no attachment URLs or public file access are exposed.
 
 Memberships are currently assigned to a normalized, verified email to support onboarding before a business user has signed in. When later implementing invitation claiming, bind the claimed membership to the Firebase UID and retain an auditable lifecycle so a changed or recycled email cannot transfer access.
 
@@ -63,6 +71,15 @@ Memberships are currently assigned to a normalized, verified email to support on
 - `GET/POST /api/customer-operations/businesses/:businessId/tickets` — list/filter/search or create tickets.
 - `GET/PATCH /api/customer-operations/businesses/:businessId/tickets/:ticketId` — read/update a ticket and its private history.
 - `POST /api/customer-operations/businesses/:businessId/tickets/:ticketId/internal-notes` — add a private internal note.
+- `GET/POST /api/customer-operations/businesses/:businessId/conversations` — list inbox threads or create a thread with an initial customer-visible message.
+- `GET /api/customer-operations/businesses/:businessId/conversations/:conversationId` — load all messages for an authorized business member.
+- `POST /api/customer-operations/businesses/:businessId/conversations/:conversationId/messages` — add customer-visible or internal-only staff messages.
+- `PATCH /api/customer-operations/businesses/:businessId/conversations/:conversationId` — open or close a conversation.
+- `POST/DELETE /api/customer-operations/businesses/:businessId/conversations/:conversationId/customer-link` — issue/rotate a seven-day customer link or revoke it.
+- `GET /api/customer-operations/public/conversations` and `POST /api/customer-operations/public/conversations/messages` — read/reply using the conversation-scoped link token; customer replies cannot be internal.
+- `GET /api/customer-operations/businesses/:businessId/channels` — return available email, WhatsApp, and call-log capabilities without exposing secrets.
+- `GET/POST /api/customer-operations/businesses/:businessId/calls` — list or record business-scoped call activity.
+- `POST /api/customer-operations/businesses/:businessId/conversations/:conversationId/messages/:messageId/retry` — retry a failed outbound SMTP message.
 
 Business records require an active membership in the exact business. Platform Super Admins and Platform Support Agents are denied these data endpoints. Agent assignment is validated against active membership and rechecked inside the Firestore transaction. Ticket status transitions are validated in the transaction to prevent concurrent updates from bypassing the lifecycle rules.
 
@@ -70,7 +87,7 @@ Business records require an active membership in the exact business. Platform Su
 
 1. Foundation — access model, tenant boundaries, route, base navigation and workspace setup.
 2. Customers and Tickets — tenant-scoped profiles, ticket lifecycle, notes and history. **Implemented locally; validate against non-production Firestore.**
-3. Unified Inbox and In-App Messaging — explicit conversation/ticket relationships, customer-safe messaging and private attachments.
-4. External Channels — configured email, official WhatsApp provider boundary and call logs.
+3. Unified Inbox and In-App Messaging — **implemented locally** with explicit customer/optional-ticket relationships, customer-safe and internal messages, and expiring customer links. Attachment support was deferred at the user's request; validate using a non-production Firebase project.
+4. External Channels — **implemented locally** with configured SMTP delivery, a vendor-neutral official WhatsApp provider contract, and manual business-scoped call logs. WhatsApp sending remains disabled until a provider is selected and configured.
 5. Operations — notifications, automation, SLAs, knowledge base, feedback and business team workflows.
 6. Reporting, AI and Hardening — tenant-scoped reporting, optional provider interfaces, security and acceptance testing.

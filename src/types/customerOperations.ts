@@ -109,6 +109,77 @@ export interface CustomerOperationsTicketEvent {
   createdAt: string;
 }
 
+export type CustomerOperationsConversationStatus = 'open' | 'closed';
+export type CustomerOperationsMessageVisibility = 'customer' | 'internal';
+export type CustomerOperationsMessageChannel = 'in_app' | 'email' | 'whatsapp';
+export type CustomerOperationsMessageDeliveryStatus = 'not_applicable' | 'pending' | 'sent' | 'failed';
+export type CustomerOperationsCallDirection = 'inbound' | 'outbound';
+export type CustomerOperationsCallOutcome =
+  | 'answered'
+  | 'missed'
+  | 'voicemail'
+  | 'callback_requested'
+  | 'other';
+
+export interface CustomerOperationsConversation {
+  id: string;
+  businessId: string;
+  customerId: string;
+  customerName: string;
+  customerEmail: string;
+  ticketId: string | null;
+  ticketNumber: string | null;
+  subject: string;
+  status: CustomerOperationsConversationStatus;
+  lastMessagePreview: string;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  customerLinkExpiresAt: string | null;
+}
+
+export interface CustomerOperationsConversationMessage {
+  id: string;
+  conversationId: string;
+  authorType: 'staff' | 'customer';
+  authorEmail: string | null;
+  visibility: CustomerOperationsMessageVisibility;
+  channel: CustomerOperationsMessageChannel;
+  deliveryStatus: CustomerOperationsMessageDeliveryStatus;
+  deliveryError: string | null;
+  externalMessageId: string | null;
+  body: string;
+  createdAt: string;
+}
+
+export interface CustomerOperationsCallLog {
+  id: string;
+  businessId: string;
+  customerId: string;
+  customerName: string;
+  direction: CustomerOperationsCallDirection;
+  outcome: CustomerOperationsCallOutcome;
+  phoneNumber: string;
+  durationSeconds: number;
+  summary: string;
+  agentEmail: string;
+  createdAt: string;
+}
+
+export interface CustomerOperationsChannelCapabilities {
+  email: { configured: boolean };
+  whatsapp: { configured: false; provider: null };
+  callLogging: { enabled: true };
+}
+
+export interface CustomerOperationsWhatsAppProvider {
+  sendTextMessage(input: {
+    recipientE164: string;
+    body: string;
+    idempotencyKey: string;
+  }): Promise<{ providerMessageId: string }>;
+}
+
 export interface CustomerOperationsActivity {
   id: string;
   businessId: string;

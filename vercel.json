@@ -26,6 +26,10 @@
       "destination": "/"
     },
     {
+      "source": "/customer-operations/:path*",
+      "destination": "/"
+    },
+    {
       "source": "/feedback/:path*",
       "destination": "/"
     }

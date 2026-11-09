@@ -10,6 +10,7 @@ import { BetaDeskAdmin } from './components/beta-desk/BetaDesk';
 import { TesterLinkRequired, TesterPortal } from './components/beta-desk/TesterPortal';
 import { StudioInviteClaim } from './components/studio/StudioInviteClaim';
 import { CustomerOperationsApp } from './components/CustomerOperationsApp';
+import { CustomerOperationsCustomerConversation } from './components/CustomerOperationsCustomerConversation';
 
 export default function App() {
   const [answers, setAnswers] = React.useState<DiscoveryAnswers>(INITIAL_ANSWERS);
@@ -63,6 +64,10 @@ export default function App() {
         <CookieConsent />
       </>
     );
+  }
+
+  if (pathname === '/customer-operations/conversations') {
+    return <CustomerOperationsCustomerConversation />;
   }
 
   if (pathname === '/studio/customer-operations' || pathname.startsWith('/studio/customer-operations/')) {

@@ -21,9 +21,18 @@ import type {
   CustomerOperationsBusinessMembership,
   CustomerOperationsBusinessRole,
   CustomerOperationsActivity,
+  CustomerOperationsCallLog,
+  CustomerOperationsCallDirection,
+  CustomerOperationsCallOutcome,
+  CustomerOperationsConversation,
+  CustomerOperationsConversationMessage,
+  CustomerOperationsConversationStatus,
   CustomerOperationsCustomer,
   CustomerOperationsCustomerStatus,
   CustomerOperationsInternalNote,
+  CustomerOperationsMessageChannel,
+  CustomerOperationsMessageDeliveryStatus,
+  CustomerOperationsMessageVisibility,
   CustomerOperationsPlatformMembership,
   CustomerOperationsPlatformRole,
   CustomerOperationsTicket,
@@ -45,7 +54,13 @@ const CUSTOMER_OPERATIONS_AUDIT_COLLECTION = 'customerOperationsAuditLogs';
 const CUSTOMER_OPERATIONS_CUSTOMERS_COLLECTION = 'customerOperationsCustomers';
 const CUSTOMER_OPERATIONS_TICKETS_COLLECTION = 'customerOperationsTickets';
 const CUSTOMER_OPERATIONS_ACTIVITY_COLLECTION = 'customerOperationsActivity';
+const CUSTOMER_OPERATIONS_CONVERSATIONS_COLLECTION = 'customerOperationsConversations';
+const CUSTOMER_OPERATIONS_CALL_LOGS_COLLECTION = 'customerOperationsCallLogs';
 const FIRESTORE_BATCH_LIMIT = 450;
+
+interface StoredCustomerOperationsConversation extends CustomerOperationsConversation {
+  customerLinkTokenHash: string | null;
+}
 
 export interface ProjectTask {
   id: string;
@@ -267,6 +282,14 @@ function getCustomerOperationsTicketsCollection() {
 
 function getCustomerOperationsActivityCollection() {
   return getFirestore(getFirebaseApp()).collection(CUSTOMER_OPERATIONS_ACTIVITY_COLLECTION);
+}
+
+function getCustomerOperationsConversationsCollection() {
+  return getFirestore(getFirebaseApp()).collection(CUSTOMER_OPERATIONS_CONVERSATIONS_COLLECTION);
+}
+
+function getCustomerOperationsCallLogsCollection() {
+  return getFirestore(getFirebaseApp()).collection(CUSTOMER_OPERATIONS_CALL_LOGS_COLLECTION);
 }
 
 function getBetaDeskTicketsCollection() {
@@ -2187,4 +2210,456 @@ export async function listCustomerOperationsTicketEvents(
     .limit(100)
     .get();
   return snapshot.docs.map((document) => document.data() as CustomerOperationsTicketEvent);
+}
+
+function publicCustomerOperationsConversation(
+  stored: StoredCustomerOperationsConversation
+): CustomerOperationsConversation {
+  return {
+    id: stored.id,
+    businessId: stored.businessId,
+    customerId: stored.customerId,
+    customerName: stored.customerName,
+    customerEmail: stored.customerEmail,
+    ticketId: stored.ticketId,
+    ticketNumber: stored.ticketNumber,
+    subject: stored.subject,
+    status: stored.status,
+    lastMessagePreview: stored.lastMessagePreview,
+    createdAt: stored.createdAt,
+    updatedAt: stored.updatedAt,
+    createdBy: stored.createdBy,
+    customerLinkExpiresAt: stored.customerLinkExpiresAt,
+  };
+}
+
+async function loadCustomerOperationsConversationMessages(
+  conversationId: string,
+  customerVisibleOnly = false
+): Promise<CustomerOperationsConversationMessage[]> {
+  const collection = getCustomerOperationsConversationsCollection().doc(conversationId).collection('messages');
+  const query = customerVisibleOnly
+    ? collection.where('visibility', '==', 'customer').orderBy('createdAt', 'desc')
+    : collection.orderBy('createdAt', 'desc');
+  const snapshot = await query.limit(200).get();
+  const messages = snapshot.docs.map((document) => {
+    const stored = document.data() as Partial<CustomerOperationsConversationMessage>;
+    return {
+      ...stored,
+      channel: stored.channel || 'in_app',
+      deliveryStatus: stored.deliveryStatus || 'not_applicable',
+      deliveryError: stored.deliveryError || null,
+      externalMessageId: stored.externalMessageId || null,
+    } as CustomerOperationsConversationMessage;
+  }).filter((message) => !customerVisibleOnly
+    || message.channel !== 'email'
+    || message.deliveryStatus === 'sent');
+  return messages.reverse();
+}
+
+export async function createCustomerOperationsConversation(input: {
+  businessId: string;
+  customerId: string;
+  ticketId: string | null;
+  subject: string;
+  body: string;
+  actorEmail: string;
+}): Promise<CustomerOperationsConversation | null> {
+  const db = getFirestore(getFirebaseApp());
+  const conversationId = input.ticketId || randomUUID();
+  const conversationRef = getCustomerOperationsConversationsCollection().doc(conversationId);
+  const messageRef = conversationRef.collection('messages').doc(randomUUID());
+  const customerRef = getCustomerOperationsCustomersCollection().doc(input.customerId);
+  const ticketRef = input.ticketId ? getCustomerOperationsTicketsCollection().doc(input.ticketId) : null;
+  const activityRef = getCustomerOperationsActivityCollection().doc(randomUUID());
+  const now = new Date().toISOString();
+
+  return db.runTransaction(async (transaction) => {
+    const businessSnapshot = await transaction.get(getCustomerOperationsBusinessesCollection().doc(input.businessId));
+    const customerSnapshot = await transaction.get(customerRef);
+    const ticketSnapshot = ticketRef ? await transaction.get(ticketRef) : null;
+    if (!businessSnapshot.exists || (businessSnapshot.data() as CustomerOperationsBusiness).status !== 'active') {
+      throw new Error('Business does not exist or is inactive.');
+    }
+    const customer = customerSnapshot.exists
+      ? customerSnapshot.data() as CustomerOperationsCustomer
+      : null;
+    if (!customer || customer.businessId !== input.businessId) {
+      throw new Error('Customer does not exist in this business.');
+    }
+    let ticket: CustomerOperationsTicket | null = null;
+    if (ticketRef) {
+      ticket = ticketSnapshot?.exists ? ticketSnapshot.data() as CustomerOperationsTicket : null;
+      if (!ticket || ticket.businessId !== input.businessId || ticket.customerId !== input.customerId) {
+        throw new Error('Ticket does not belong to this customer and business.');
+      }
+    }
+    const existingConversation = await transaction.get(conversationRef);
+    if (existingConversation.exists) {
+      throw new Error('A conversation already exists for this ticket.');
+    }
+
+    const conversation: StoredCustomerOperationsConversation = {
+      id: conversationId,
+      businessId: input.businessId,
+      customerId: customer.id,
+      customerName: customer.name,
+      customerEmail: customer.email,
+      ticketId: ticket?.id || null,
+      ticketNumber: ticket?.ticketNumber || null,
+      subject: input.subject,
+      status: 'open',
+      lastMessagePreview: input.body.slice(0, 180),
+      createdAt: now,
+      updatedAt: now,
+      createdBy: input.actorEmail,
+      customerLinkTokenHash: null,
+      customerLinkExpiresAt: null,
+    };
+    const message: CustomerOperationsConversationMessage = {
+      id: messageRef.id,
+      conversationId,
+      authorType: 'staff',
+      authorEmail: input.actorEmail,
+      visibility: 'customer',
+      channel: 'in_app',
+      deliveryStatus: 'not_applicable',
+      deliveryError: null,
+      externalMessageId: null,
+      body: input.body,
+      createdAt: now,
+    };
+    transaction.create(conversationRef, conversation);
+    transaction.create(messageRef, message);
+    transaction.update(customerRef, { updatedAt: now, lastInteractionAt: now });
+    transaction.create(activityRef, {
+      id: activityRef.id,
+      businessId: input.businessId,
+      customerId: customer.id,
+      ticketId: ticket?.id || null,
+      action: 'conversation_started',
+      actorEmail: input.actorEmail,
+      createdAt: now,
+    } satisfies CustomerOperationsActivity);
+    if (ticketRef) transaction.update(ticketRef, { updatedAt: now });
+    return publicCustomerOperationsConversation(conversation);
+  });
+}
+
+export async function listCustomerOperationsConversations(input: {
+  businessId: string;
+  limit: number;
+  cursor?: { updatedAt: string; id: string };
+  status?: CustomerOperationsConversationStatus;
+}): Promise<{ items: CustomerOperationsConversation[]; nextCursor: string | null }> {
+  let query = getCustomerOperationsConversationsCollection()
+    .where('businessId', '==', input.businessId)
+    .orderBy('updatedAt', 'desc')
+    .orderBy('id', 'desc');
+  if (input.status) query = query.where('status', '==', input.status) as typeof query;
+  if (input.cursor) query = query.startAfter(input.cursor.updatedAt, input.cursor.id) as typeof query;
+  const snapshot = await query.limit(input.limit + 1).get();
+  const documents = snapshot.docs.slice(0, input.limit);
+  const items = documents.map((document) =>
+    publicCustomerOperationsConversation(document.data() as StoredCustomerOperationsConversation)
+  );
+  const last = items.at(-1);
+  return {
+    items,
+    nextCursor: snapshot.docs.length > input.limit && last
+      ? Buffer.from(JSON.stringify({ updatedAt: last.updatedAt, id: last.id })).toString('base64url')
+      : null,
+  };
+}
+
+export async function loadCustomerOperationsConversation(
+  businessId: string,
+  conversationId: string
+): Promise<{
+  conversation: CustomerOperationsConversation;
+  messages: CustomerOperationsConversationMessage[];
+} | null> {
+  const snapshot = await getCustomerOperationsConversationsCollection().doc(conversationId).get();
+  if (!snapshot.exists) return null;
+  const stored = snapshot.data() as StoredCustomerOperationsConversation;
+  if (stored.businessId !== businessId) return null;
+  return {
+    conversation: publicCustomerOperationsConversation(stored),
+    messages: await loadCustomerOperationsConversationMessages(conversationId),
+  };
+}
+
+export async function addCustomerOperationsConversationMessage(input: {
+  businessId: string;
+  conversationId: string;
+  body: string;
+  authorType: 'staff' | 'customer';
+  authorEmail: string | null;
+  visibility: CustomerOperationsMessageVisibility;
+  channel: CustomerOperationsMessageChannel;
+  deliveryStatus?: CustomerOperationsMessageDeliveryStatus;
+  tokenHash?: string;
+}): Promise<CustomerOperationsConversationMessage | null> {
+  const db = getFirestore(getFirebaseApp());
+  const conversationRef = getCustomerOperationsConversationsCollection().doc(input.conversationId);
+  const messageRef = conversationRef.collection('messages').doc(randomUUID());
+  const activityRef = getCustomerOperationsActivityCollection().doc(randomUUID());
+  const now = new Date().toISOString();
+  return db.runTransaction(async (transaction) => {
+    const conversationSnapshot = await transaction.get(conversationRef);
+    if (!conversationSnapshot.exists) return null;
+    const conversation = conversationSnapshot.data() as StoredCustomerOperationsConversation;
+    if (conversation.businessId !== input.businessId
+      || (input.tokenHash !== undefined && (
+        conversation.customerLinkTokenHash !== input.tokenHash
+        || !conversation.customerLinkExpiresAt
+        || Date.parse(conversation.customerLinkExpiresAt) <= Date.now()
+      ))) {
+      return null;
+    }
+    const customerRef = getCustomerOperationsCustomersCollection().doc(conversation.customerId);
+    const customerSnapshot = await transaction.get(customerRef);
+    const ticketRef = conversation.ticketId
+      ? getCustomerOperationsTicketsCollection().doc(conversation.ticketId)
+      : null;
+    const ticketSnapshot = ticketRef ? await transaction.get(ticketRef) : null;
+    if (!customerSnapshot.exists
+      || (customerSnapshot.data() as CustomerOperationsCustomer).businessId !== input.businessId) {
+      return null;
+    }
+    if (ticketRef && (!ticketSnapshot?.exists
+      || (ticketSnapshot.data() as CustomerOperationsTicket).businessId !== input.businessId)) {
+      return null;
+    }
+
+    const message: CustomerOperationsConversationMessage = {
+      id: messageRef.id,
+      conversationId: input.conversationId,
+      authorType: input.authorType,
+      authorEmail: input.authorEmail,
+      visibility: input.visibility,
+      channel: input.channel,
+      deliveryStatus: input.deliveryStatus || 'not_applicable',
+      deliveryError: null,
+      externalMessageId: null,
+      body: input.body,
+      createdAt: now,
+    };
+    transaction.create(messageRef, message);
+    transaction.update(conversationRef, {
+      lastMessagePreview: input.body.slice(0, 180),
+      updatedAt: now,
+      ...(input.authorType === 'customer' ? { status: 'open' } : {}),
+    });
+    transaction.update(customerRef, { updatedAt: now, lastInteractionAt: now });
+    transaction.create(activityRef, {
+      id: activityRef.id,
+      businessId: input.businessId,
+      customerId: conversation.customerId,
+      ticketId: conversation.ticketId,
+      action: 'conversation_message_added',
+      actorEmail: input.authorEmail || 'customer',
+      createdAt: now,
+    } satisfies CustomerOperationsActivity);
+    if (ticketRef) transaction.update(ticketRef, { updatedAt: now });
+    return message;
+  });
+}
+
+export async function updateCustomerOperationsConversationMessageDelivery(input: {
+  businessId: string;
+  conversationId: string;
+  messageId: string;
+  status: Extract<CustomerOperationsMessageDeliveryStatus, 'pending' | 'sent' | 'failed'>;
+  error?: string | null;
+  externalMessageId?: string | null;
+}): Promise<CustomerOperationsConversationMessage | null> {
+  const db = getFirestore(getFirebaseApp());
+  const conversationRef = getCustomerOperationsConversationsCollection().doc(input.conversationId);
+  const messageRef = conversationRef.collection('messages').doc(input.messageId);
+  return db.runTransaction(async (transaction) => {
+    const [conversationSnapshot, messageSnapshot] = await Promise.all([
+      transaction.get(conversationRef),
+      transaction.get(messageRef),
+    ]);
+    if (!conversationSnapshot.exists
+      || (conversationSnapshot.data() as StoredCustomerOperationsConversation).businessId !== input.businessId
+      || !messageSnapshot.exists) return null;
+    const message = messageSnapshot.data() as CustomerOperationsConversationMessage;
+    if (message.channel !== 'email' || message.visibility !== 'customer') return null;
+    const next: CustomerOperationsConversationMessage = {
+      ...message,
+      deliveryStatus: input.status,
+      deliveryError: input.status === 'failed' ? input.error || 'Email delivery failed.' : null,
+      externalMessageId: input.status === 'sent' ? input.externalMessageId || null : null,
+    };
+    transaction.set(messageRef, next);
+    return next;
+  });
+}
+
+export async function loadCustomerOperationsConversationMessage(
+  businessId: string,
+  conversationId: string,
+  messageId: string
+): Promise<CustomerOperationsConversationMessage | null> {
+  const conversation = await getCustomerOperationsConversationsCollection().doc(conversationId).get();
+  if (!conversation.exists
+    || (conversation.data() as StoredCustomerOperationsConversation).businessId !== businessId) return null;
+  const message = await getCustomerOperationsConversationsCollection().doc(conversationId)
+    .collection('messages').doc(messageId).get();
+  return message.exists ? message.data() as CustomerOperationsConversationMessage : null;
+}
+
+export async function updateCustomerOperationsConversationStatus(input: {
+  businessId: string;
+  conversationId: string;
+  status: CustomerOperationsConversationStatus;
+}): Promise<CustomerOperationsConversation | null> {
+  const conversationRef = getCustomerOperationsConversationsCollection().doc(input.conversationId);
+  const updatedAt = new Date().toISOString();
+  return getFirestore(getFirebaseApp()).runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(conversationRef);
+    if (!snapshot.exists) return null;
+    const stored = snapshot.data() as StoredCustomerOperationsConversation;
+    if (stored.businessId !== input.businessId) return null;
+    const next = { ...stored, status: input.status, updatedAt };
+    transaction.set(conversationRef, next);
+    return publicCustomerOperationsConversation(next);
+  });
+}
+
+export async function createCustomerOperationsCallLog(input: {
+  businessId: string;
+  customerId: string;
+  direction: CustomerOperationsCallDirection;
+  outcome: CustomerOperationsCallOutcome;
+  phoneNumber: string;
+  durationSeconds: number;
+  summary: string;
+  agentEmail: string;
+}): Promise<CustomerOperationsCallLog | null> {
+  const db = getFirestore(getFirebaseApp());
+  const callRef = getCustomerOperationsCallLogsCollection().doc(randomUUID());
+  const customerRef = getCustomerOperationsCustomersCollection().doc(input.customerId);
+  const activityRef = getCustomerOperationsActivityCollection().doc(randomUUID());
+  const now = new Date().toISOString();
+  return db.runTransaction(async (transaction) => {
+    const businessRef = getCustomerOperationsBusinessesCollection().doc(input.businessId);
+    const [businessSnapshot, customerSnapshot] = await Promise.all([
+      transaction.get(businessRef),
+      transaction.get(customerRef),
+    ]);
+    if (!businessSnapshot.exists || (businessSnapshot.data() as CustomerOperationsBusiness).status !== 'active') {
+      throw new Error('Business does not exist or is inactive.');
+    }
+    const customer = customerSnapshot.exists
+      ? customerSnapshot.data() as CustomerOperationsCustomer
+      : null;
+    if (!customer || customer.businessId !== input.businessId) {
+      throw new Error('Customer does not exist in this business.');
+    }
+    const call: CustomerOperationsCallLog = {
+      id: callRef.id,
+      businessId: input.businessId,
+      customerId: customer.id,
+      customerName: customer.name,
+      direction: input.direction,
+      outcome: input.outcome,
+      phoneNumber: input.phoneNumber || customer.phone || customer.whatsapp,
+      durationSeconds: input.durationSeconds,
+      summary: input.summary,
+      agentEmail: input.agentEmail,
+      createdAt: now,
+    };
+    transaction.create(callRef, call);
+    transaction.update(customerRef, { updatedAt: now, lastInteractionAt: now });
+    transaction.create(activityRef, {
+      id: activityRef.id,
+      businessId: input.businessId,
+      customerId: customer.id,
+      ticketId: null,
+      action: 'call_logged',
+      actorEmail: input.agentEmail,
+      createdAt: now,
+    } satisfies CustomerOperationsActivity);
+    return call;
+  });
+}
+
+export async function listCustomerOperationsCallLogs(input: {
+  businessId: string;
+  customerId?: string;
+  limit: number;
+}): Promise<CustomerOperationsCallLog[]> {
+  let query = getCustomerOperationsCallLogsCollection()
+    .where('businessId', '==', input.businessId)
+    .orderBy('createdAt', 'desc');
+  if (input.customerId) query = query.where('customerId', '==', input.customerId) as typeof query;
+  const snapshot = await query.limit(input.limit).get();
+  return snapshot.docs.map((document) => document.data() as CustomerOperationsCallLog);
+}
+
+export async function setCustomerOperationsConversationCustomerLink(input: {
+  businessId: string;
+  conversationId: string;
+  tokenHash: string;
+  expiresAt: string;
+}): Promise<CustomerOperationsConversation | null> {
+  const conversationRef = getCustomerOperationsConversationsCollection().doc(input.conversationId);
+  return getFirestore(getFirebaseApp()).runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(conversationRef);
+    if (!snapshot.exists) return null;
+    const stored = snapshot.data() as StoredCustomerOperationsConversation;
+    if (stored.businessId !== input.businessId) return null;
+    const next = {
+      ...stored,
+      customerLinkTokenHash: input.tokenHash,
+      customerLinkExpiresAt: input.expiresAt,
+    };
+    transaction.set(conversationRef, next);
+    return publicCustomerOperationsConversation(next);
+  });
+}
+
+export async function revokeCustomerOperationsConversationCustomerLink(input: {
+  businessId: string;
+  conversationId: string;
+}): Promise<boolean> {
+  const conversationRef = getCustomerOperationsConversationsCollection().doc(input.conversationId);
+  return getFirestore(getFirebaseApp()).runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(conversationRef);
+    if (!snapshot.exists) return false;
+    const stored = snapshot.data() as StoredCustomerOperationsConversation;
+    if (stored.businessId !== input.businessId) return false;
+    transaction.update(conversationRef, {
+      customerLinkTokenHash: null,
+      customerLinkExpiresAt: null,
+    });
+    return true;
+  });
+}
+
+export async function loadCustomerOperationsConversationByTokenHash(
+  tokenHash: string
+): Promise<{
+  conversation: CustomerOperationsConversation;
+  messages: CustomerOperationsConversationMessage[];
+} | null> {
+  const snapshot = await getCustomerOperationsConversationsCollection()
+    .where('customerLinkTokenHash', '==', tokenHash)
+    .limit(1)
+    .get();
+  if (snapshot.empty) return null;
+  const stored = snapshot.docs[0].data() as StoredCustomerOperationsConversation;
+  if (!stored.customerLinkExpiresAt || Date.parse(stored.customerLinkExpiresAt) <= Date.now()) return null;
+  const [business, customer] = await Promise.all([
+    loadCustomerOperationsBusiness(stored.businessId),
+    loadCustomerOperationsCustomer(stored.businessId, stored.customerId),
+  ]);
+  if (!business || business.status !== 'active' || !customer || customer.status !== 'active') return null;
+  return {
+    conversation: publicCustomerOperationsConversation(stored),
+    messages: await loadCustomerOperationsConversationMessages(stored.id, true),
+  };
 }
