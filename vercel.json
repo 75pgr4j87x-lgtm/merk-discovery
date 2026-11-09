@@ -6,6 +6,10 @@
   "outputDirectory": "public",
   "rewrites": [
     {
+      "source": "/api/customer-operations/:path*",
+      "destination": "/api/customer-operations/route?__customer_operations_path=:path*"
+    },
+    {
       "source": "/api/betadesk/:path*",
       "destination": "/api/betadesk/route?__betadesk_path=:path*"
     },
