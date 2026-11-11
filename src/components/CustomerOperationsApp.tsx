@@ -12,7 +12,11 @@ import type {
   CustomerOperationsPlatformMembership,
 } from '../types/customerOperations';
 
-type Section = 'overview' | 'businesses' | 'team' | 'customers' | 'tickets' | 'inbox' | 'calls';
+const CustomerOperationsPlatform = React.lazy(() => import('./CustomerOperationsPlatform'));
+const CustomerOperationsOperations = React.lazy(() => import('./CustomerOperationsOperations'));
+const CustomerOperationsReports = React.lazy(() => import('./CustomerOperationsReports'));
+
+type Section = 'overview' | 'businesses' | 'team' | 'customers' | 'tickets' | 'inbox' | 'calls' | 'reports' | 'operations' | 'platform-support';
 type Workspace = { id: string; label: string; role: string };
 
 async function customerOperationsFetch(path: string, init: RequestInit = {}) {
@@ -52,6 +56,7 @@ export const CustomerOperationsApp: React.FC = () => {
   const [businessName, setBusinessName] = React.useState('');
   const [ownerEmail, setOwnerEmail] = React.useState('');
   const [platformMemberEmail, setPlatformMemberEmail] = React.useState('');
+  const [invitationLink,setInvitationLink]=React.useState('');
   const [notice, setNotice] = React.useState('');
   const [actionError, setActionError] = React.useState('');
   const [isSaving, setIsSaving] = React.useState(false);
@@ -66,7 +71,7 @@ export const CustomerOperationsApp: React.FC = () => {
     ...(access?.businesses || []).map((membership) => ({
       id: `business:${membership.businessId}`,
       label: membership.businessName,
-      role: membership.role.replaceAll('_', ' '),
+      role: membership.role,
     })),
   ];
   const selectedWorkspace = workspaces.find((workspace) => workspace.id === workspaceId) || workspaces[0];
@@ -154,10 +159,10 @@ export const CustomerOperationsApp: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: businessName, ownerEmail }),
       });
-      await responseData<CustomerOperationsBusiness>(response);
+      const created=await responseData<CustomerOperationsBusiness & {invitationLink:string}>(response);setInvitationLink(created.invitationLink);
       setBusinessName('');
       setOwnerEmail('');
-      setNotice('Business created. Its owner can sign in with the assigned verified email.');
+      setNotice('Business created. Share the private invitation link with its owner.');
       await loadAdminData();
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'Could not create the business.');
@@ -177,7 +182,7 @@ export const CustomerOperationsApp: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: platformMemberEmail, role: 'platform_support_agent' }),
       });
-      await responseData<CustomerOperationsPlatformMembership>(response);
+      const invited=await responseData<CustomerOperationsPlatformMembership & {invitationLink:string}>(response);setInvitationLink(invited.invitationLink);
       setPlatformMemberEmail('');
       setNotice('Platform Support Agent access granted.');
       await loadAdminData();
@@ -207,6 +212,7 @@ export const CustomerOperationsApp: React.FC = () => {
 
   const navItems: Array<{ id: Section; label: string; icon: React.ReactNode }> = [
     { id: 'overview', label: 'Overview', icon: <LayoutDashboard size={17} /> },
+    { id: 'platform-support', label: isBusinessWorkspace ? 'Contact platform' : 'Platform support', icon: <Inbox size={17} /> },
     ...(showPlatformAdmin ? [
       { id: 'businesses' as const, label: 'Businesses', icon: <Building2 size={17} /> },
       { id: 'team' as const, label: 'Support agents', icon: <Users size={17} /> },
@@ -216,6 +222,8 @@ export const CustomerOperationsApp: React.FC = () => {
       { id: 'tickets' as const, label: 'Tickets', icon: <Shield size={17} /> },
       { id: 'inbox' as const, label: 'Inbox', icon: <Inbox size={17} /> },
       { id: 'calls' as const, label: 'Call logs', icon: <Phone size={17} /> },
+      { id: 'operations' as const, label: 'Operations', icon: <Users size={17} /> },
+      ...(['business_owner', 'business_manager'].includes(selectedWorkspace?.role || '') ? [{ id: 'reports' as const, label: 'Reports', icon: <LayoutDashboard size={17} /> }] : []),
     ] : []),
   ];
 
@@ -231,7 +239,7 @@ export const CustomerOperationsApp: React.FC = () => {
             <p className="text-xs text-slate-500">Merk Discovery</p>
           </div>
         </div>
-        <GoogleSignInButton user={user} onAuthChange={(nextUser) => {
+        <GoogleSignInButton identityOnly user={user} onAuthChange={(nextUser) => {
           setUser(nextUser);
           if (nextUser) void loadAccess(nextUser);
           else {
@@ -310,10 +318,10 @@ export const CustomerOperationsApp: React.FC = () => {
                         : section === 'team' ? 'Support agents'
                           : section === 'customers' ? 'Customers'
                             : section === 'tickets' ? 'Tickets'
-                              : section === 'inbox' ? 'Inbox' : 'Call logs'}
+                              : section === 'inbox' ? 'Inbox' : section === 'reports' ? 'Reports' : section === 'operations' ? 'Operations' : section === 'platform-support' ? (isBusinessWorkspace?'Contact platform support':'Platform support') : 'Call logs'}
                   </h1>
                   <p className="mt-1 text-sm capitalize text-slate-500">
-                    {selectedWorkspace?.role || 'Workspace access'}
+                    {selectedWorkspace?.role.replaceAll('_', ' ') || 'Workspace access'}
                   </p>
                 </div>
                 <span className="hidden items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 sm:flex">
@@ -322,8 +330,10 @@ export const CustomerOperationsApp: React.FC = () => {
               </div>
 
               {actionError && <p role="alert" className="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{actionError}</p>}
+              {invitationLink && <div className="mb-4 rounded border p-4"><label className="text-sm">Private invitation link<input readOnly value={invitationLink} className="mt-2 w-full rounded border p-2" /></label><button className="mt-2 rounded border px-3 py-2" onClick={()=>void navigator.clipboard.writeText(invitationLink).then(()=>setNotice('Invitation link copied.')).catch(()=>setActionError('Copy the link from the field.'))}>Copy invitation</button></div>}
               {notice && <p role="status" className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{notice}</p>}
 
+              {section==='platform-support'&&<React.Suspense fallback={<p role="status">Loading platform support…</p>}><CustomerOperationsPlatform key={selectedWorkspace?.id} businessId={isBusinessWorkspace?selectedBusinessId:undefined} platformRole={isPlatformWorkspace?access?.platformRole||undefined:undefined} businesses={businesses}/></React.Suspense>}
               {section === 'overview' && (
                 <section className="rounded-xl border border-slate-200 bg-white p-6 sm:p-8">
                   <h2 className="text-base font-semibold">Customer Operations workspace</h2>
@@ -421,6 +431,16 @@ export const CustomerOperationsApp: React.FC = () => {
               )}
               {isBusinessWorkspace && selectedBusinessId && section === 'inbox' && (
                 <CustomerOperationsInbox key={selectedBusinessId} businessId={selectedBusinessId} />
+              )}
+              {isBusinessWorkspace && selectedBusinessId && section === 'operations' && (
+                <React.Suspense fallback={<p role="status">Loading operations…</p>}>
+                  <CustomerOperationsOperations key={selectedBusinessId} businessId={selectedBusinessId} role={selectedWorkspace?.role || ''} />
+                </React.Suspense>
+              )}
+              {isBusinessWorkspace && selectedBusinessId && section === 'reports' && (
+                <React.Suspense fallback={<p role="status">Loading reports…</p>}>
+                  <CustomerOperationsReports key={selectedBusinessId} businessId={selectedBusinessId} />
+                </React.Suspense>
               )}
               {isBusinessWorkspace && selectedBusinessId && section === 'calls' && (
                 <CustomerOperationsCallLogs key={selectedBusinessId} businessId={selectedBusinessId} />

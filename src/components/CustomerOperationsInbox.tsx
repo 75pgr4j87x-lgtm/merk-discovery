@@ -1,3 +1,5 @@
+import CustomerOperationsFiles from './CustomerOperationsFiles';
+import type { CustomerOperationsAttachment } from '../types/customerOperations';
 import React from 'react';
 import { auth } from '../services/auth';
 import type {
@@ -48,6 +50,9 @@ export const CustomerOperationsInbox: React.FC<{ businessId: string }> = ({ busi
   const [tickets, setTickets] = React.useState<CustomerOperationsTicket[]>([]);
   const [selectedId, setSelectedId] = React.useState('');
   const [detail, setDetail] = React.useState<ConversationDetail | null>(null);
+  const draftVersion=React.useRef('');
+  const [assigneeFilter,setAssigneeFilter]=React.useState('');
+  const [search,setSearch]=React.useState('');
   const [statusFilter, setStatusFilter] = React.useState('');
   const [nextCursor, setNextCursor] = React.useState<string | null>(null);
   const [showCreateForm, setShowCreateForm] = React.useState(false);
@@ -55,6 +60,10 @@ export const CustomerOperationsInbox: React.FC<{ businessId: string }> = ({ busi
   const [ticketId, setTicketId] = React.useState('');
   const [subject, setSubject] = React.useState('');
   const [initialMessage, setInitialMessage] = React.useState('');
+  const creationKey=React.useRef(crypto.randomUUID());
+  const messageKey=React.useRef(crypto.randomUUID());
+  const [linkTicketId,setLinkTicketId]=React.useState('');
+  const [files,setFiles]=React.useState<CustomerOperationsAttachment[]>([]);
   const [reply, setReply] = React.useState('');
   const [visibility, setVisibility] = React.useState<CustomerOperationsMessageVisibility>('customer');
   const [channel, setChannel] = React.useState<CustomerOperationsMessageChannel>('in_app');
@@ -70,11 +79,13 @@ export const CustomerOperationsInbox: React.FC<{ businessId: string }> = ({ busi
   const loadConversations = React.useCallback(async (append = false, cursor?: string | null) => {
     const params = new URLSearchParams({ limit: '50' });
     if (statusFilter) params.set('status', statusFilter);
+    if(assigneeFilter)params.set('assignee',assigneeFilter);
+    if(search.trim())params.set('search',search.trim());
     if (append && cursor) params.set('cursor', cursor);
     const page = await inboxRequest<Page<CustomerOperationsConversation>>(`${base}/conversations?${params}`);
     setConversations((current) => append ? [...current, ...page.items] : page.items);
     setNextCursor(page.nextCursor);
-  }, [base, statusFilter]);
+  }, [base, statusFilter,assigneeFilter,search]);
 
   const loadDetail = React.useCallback(async (id: string) => {
     if (!id) {
@@ -84,7 +95,6 @@ export const CustomerOperationsInbox: React.FC<{ businessId: string }> = ({ busi
     }
     const result = await inboxRequest<ConversationDetail>(`${base}/conversations/${encodeURIComponent(id)}`);
     setDetail(result);
-    setCustomerLink('');
   }, [base]);
 
   React.useEffect(() => {
@@ -110,6 +120,7 @@ export const CustomerOperationsInbox: React.FC<{ businessId: string }> = ({ busi
   }, [base, loadConversations]);
 
   React.useEffect(() => {
+    setFiles([]);setReply('');draftVersion.current='';messageKey.current=crypto.randomUUID();
     void loadDetail(selectedId).catch((cause: unknown) => {
       setError(cause instanceof Error ? cause.message : 'Could not load conversation details.');
     });
@@ -119,6 +130,8 @@ export const CustomerOperationsInbox: React.FC<{ businessId: string }> = ({ busi
     await Promise.all([loadConversations(), loadDetail(conversationId)]);
   };
 
+  React.useEffect(()=>{let active=true,running=false;const timer=setInterval(()=>{if(document.hidden||running||isSaving)return;running=true;void Promise.all([loadConversations(),selectedId?loadDetail(selectedId):Promise.resolve()]).catch(e=>{if(active)setError(e instanceof Error?e.message:'Could not refresh the inbox.');}).finally(()=>{running=false;});},5000);return()=>{active=false;clearInterval(timer);};},[loadConversations,loadDetail,selectedId,isSaving]);
+  async function changeTicketLink(id:string,remove=false){if(!detail)return;try{await inboxRequest(`${base}/conversations/${detail.conversation.id}/tickets/${encodeURIComponent(id)}`,{method:remove?'DELETE':'POST'});setLinkTicketId('');await refresh();}catch(e){setError(e instanceof Error?e.message:'Could not change ticket link.');}}
   const createConversation = async (event: React.FormEvent) => {
     event.preventDefault();
     setIsSaving(true);
@@ -127,9 +140,10 @@ export const CustomerOperationsInbox: React.FC<{ businessId: string }> = ({ busi
     try {
       const conversation = await inboxRequest<CustomerOperationsConversation>(`${base}/conversations`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key':creationKey.current },
         body: JSON.stringify({ customerId, ticketId, subject, body: initialMessage }),
       });
+      creationKey.current=crypto.randomUUID();
       setCustomerId('');
       setTicketId('');
       setSubject('');
@@ -156,10 +170,11 @@ export const CustomerOperationsInbox: React.FC<{ businessId: string }> = ({ busi
         `${base}/conversations/${encodeURIComponent(detail.conversation.id)}/messages`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ body: reply, visibility, channel }),
+          headers: { 'Content-Type': 'application/json', 'Idempotency-Key':messageKey.current },
+          body: JSON.stringify({ body: reply, visibility, channel,attachmentIds:files.map(f=>f.id),expectedUpdatedAt:draftVersion.current||detail.conversation.updatedAt }),
         }
       );
+      messageKey.current=crypto.randomUUID();draftVersion.current='';setFiles([]);
       setReply('');
       await refresh();
       setNotice(visibility === 'customer'
@@ -269,7 +284,8 @@ export const CustomerOperationsInbox: React.FC<{ businessId: string }> = ({ busi
   );
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[minmax(280px,0.8fr)_minmax(0,1.4fr)]">
+    <div className="grid gap-5 xl:grid-cols-[minmax(220px,0.8fr)_minmax(0,1.4fr)_minmax(200px,0.7fr)]">
+
       <section className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white">
         <div className="flex items-center justify-between gap-3 border-b border-slate-200 p-4">
           <div>
@@ -281,6 +297,7 @@ export const CustomerOperationsInbox: React.FC<{ businessId: string }> = ({ busi
           </button>
         </div>
 
+        <div className="space-y-2 border-b p-3"><label className="block text-xs">Search conversation subject<input value={search} onChange={e=>setSearch(e.target.value)} maxLength={100} className="mt-1 w-full rounded border p-2"/></label><label className="block text-xs">Assignment<select aria-label="Conversation assignment filter" value={assigneeFilter} onChange={e=>setAssigneeFilter(e.target.value)} className="mt-1 w-full rounded border p-2"><option value="">All</option><option value="mine">Mine</option><option value="unassigned">Unassigned</option></select></label></div>
         {showCreateForm && (
           <form onSubmit={createConversation} className="space-y-3 border-b border-slate-200 bg-slate-50 p-4">
             <label className="block text-xs font-medium text-slate-600">Customer
@@ -403,7 +420,7 @@ export const CustomerOperationsInbox: React.FC<{ businessId: string }> = ({ busi
                     </span>
                     <time className="text-slate-500">{new Date(message.createdAt).toLocaleString()}</time>
                   </div>
-                  <p className="mt-2 whitespace-pre-wrap break-words text-sm text-slate-800">{message.body}</p>
+                  <p className="mt-2 whitespace-pre-wrap break-words text-sm text-slate-800">{message.body}</p><CustomerOperationsFiles files={message.attachments||[]} businessId={businessId} conversationId={detail!.conversation.id} onError={setError}/>
                   {message.channel === 'email' && (
                     <div className="mt-2 flex items-center justify-between gap-3 text-xs">
                       <span className={message.deliveryStatus === 'sent' ? 'text-emerald-700' : 'text-rose-700'}>
@@ -444,7 +461,9 @@ export const CustomerOperationsInbox: React.FC<{ businessId: string }> = ({ busi
                   </select>
                 </label>
               )}
-              <textarea required minLength={2} maxLength={3000} rows={3} value={reply} onChange={(event) => setReply(event.target.value)} aria-label={visibility === 'customer' ? 'Customer reply' : 'Internal message'} placeholder={visibility === 'customer' ? 'Write a reply…' : 'Write an internal message…'} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              {reply&&draftVersion.current&&draftVersion.current!==detail!.conversation.updatedAt&&<div role="status" className="rounded border border-amber-300 p-3 text-sm">This conversation changed while you were writing. Review the latest messages.<button type="button" onClick={()=>{draftVersion.current=detail!.conversation.updatedAt;setNotice('Latest messages acknowledged. You can now send your draft.');}} className="ml-2 rounded border px-2 py-1">I reviewed the updates</button></div>}
+              <CustomerOperationsFiles files={files} onChange={value=>{messageKey.current=crypto.randomUUID();setFiles(value);}} businessId={businessId} conversationId={detail!.conversation.id} visibility={visibility} onError={setError}/>
+              <textarea required minLength={2} maxLength={3000} rows={3} value={reply} onChange={(event) => (draftVersion.current ||= detail?.conversation.updatedAt||'',messageKey.current=crypto.randomUUID(),setReply(event.target.value))} aria-label={visibility === 'customer' ? 'Customer reply' : 'Internal message'} placeholder={visibility === 'customer' ? 'Write a reply…' : 'Write an internal message…'} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
               {!capabilities?.email.configured && visibility === 'customer' && (
                 <p className="mt-2 text-xs text-slate-500">Email is unavailable until SMTP is configured on the local server. WhatsApp requires an official provider integration.</p>
               )}
@@ -457,6 +476,7 @@ export const CustomerOperationsInbox: React.FC<{ businessId: string }> = ({ busi
           </>
         )}
       </section>
+      {detail && <aside aria-label="Customer context" className="mb-4 rounded border p-3 text-sm"><h2 className="font-semibold">Customer</h2><p className="mt-2">Assigned: {detail.conversation.assignedAgent||'Unassigned'}</p><button type="button" className="my-2 rounded border px-2 py-1" onClick={()=>void inboxRequest(`${base}/conversations/${detail.conversation.id}/assignment`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({assignedAgent:auth.currentUser?.email})}).then(()=>refresh()).catch(e=>setError(e.message))}>Assign to me</button>{detail.conversation.assignedAgent===auth.currentUser?.email&&<button type="button" className="m-2 rounded border px-2 py-1" onClick={()=>void inboxRequest(`${base}/conversations/${detail.conversation.id}/assignment`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({assignedAgent:''})}).then(()=>refresh()).catch(e=>setError(e.message))}>Release</button>}<p className="mt-2">{detail.conversation.customerName}</p><p className="mb-4 break-all text-slate-600">{detail.conversation.customerEmail}</p><h3 className="font-semibold">Linked tickets</h3>{(detail.conversation.ticketIds || (detail.conversation.ticketId?[detail.conversation.ticketId]:[])).map(id=><div key={id} className="flex items-center gap-2"><span>{tickets.find(t=>t.id===id)?.ticketNumber || id}</span><button type="button" onClick={()=>{if(window.confirm('Unlink this ticket from the conversation?'))void changeTicketLink(id,true);}} className="rounded border px-2 py-1">Unlink</button></div>)}<label className="block">Link a ticket<select aria-label="Link a ticket" value={linkTicketId} onChange={e=>setLinkTicketId(e.target.value)} className="m-2 rounded border p-2"><option value="">Choose a ticket</option>{tickets.filter(t=>t.customerId===detail.conversation.customerId).map(t=><option key={t.id} value={t.id}>{t.ticketNumber}: {t.subject}</option>)}</select></label><button type="button" disabled={!linkTicketId} onClick={()=>void changeTicketLink(linkTicketId)} className="rounded border px-3 py-2">Link ticket</button></aside>}
     </div>
   );
 };

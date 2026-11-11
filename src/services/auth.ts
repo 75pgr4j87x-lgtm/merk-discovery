@@ -1,10 +1,13 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User } from 'firebase/auth';
+import { connectAuthEmulator, getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 // Initialize Firebase
-const app = initializeApp(firebaseConfig);
+const emulatorProject = import.meta.env.VITE_FIREBASE_PROJECT_ID;
+const useEmulators = import.meta.env.DEV && import.meta.env.VITE_USE_FIREBASE_EMULATORS === 'true' && typeof emulatorProject === 'string' && emulatorProject.startsWith('demo-');
+const app = initializeApp(useEmulators ? {...firebaseConfig, projectId:emulatorProject,authDomain:'localhost',storageBucket:`${emulatorProject}.appspot.com`,apiKey:'demo-emulator-key'} : firebaseConfig);
 export const auth = getAuth(app);
+if(useEmulators) connectAuthEmulator(auth,'http://127.0.0.1:9099');
 
 // Configure Google OAuth Provider with requested Google Workspace scopes
 export const provider = new GoogleAuthProvider();

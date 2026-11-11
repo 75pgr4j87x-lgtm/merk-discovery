@@ -1,3 +1,6 @@
+import CustomerOperationsFiles from './CustomerOperationsFiles';
+import type { CustomerOperationsAttachment } from '../types/customerOperations';
+import CustomerOperationsFeedback from './CustomerOperationsFeedback';
 import React from 'react';
 import type {
   CustomerOperationsConversationMessage,
@@ -40,6 +43,8 @@ async function publicConversationRequest<T>(token: string, path: string, init?: 
 export const CustomerOperationsCustomerConversation: React.FC = () => {
   const [token] = React.useState(() => new URLSearchParams(window.location.hash.slice(1)).get('token') || '');
   const [data, setData] = React.useState<PublicConversationData | null>(null);
+  const messageKey=React.useRef(crypto.randomUUID());
+  const [files,setFiles]=React.useState<CustomerOperationsAttachment[]>([]);
   const [reply, setReply] = React.useState('');
   const [isLoading, setIsLoading] = React.useState(true);
   const [isSending, setIsSending] = React.useState(false);
@@ -62,6 +67,8 @@ export const CustomerOperationsCustomerConversation: React.FC = () => {
     return () => { active = false; };
   }, [loadConversation]);
 
+  React.useEffect(()=>{const timer=setInterval(()=>{if(!document.hidden&&token)void loadConversation().catch(e=>setError(e instanceof Error?e.message:'Could not refresh messages.'));},5000);return()=>clearInterval(timer);},[token,loadConversation]);
+
   const sendReply = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!token || reply.trim().length < 2) return;
@@ -74,10 +81,11 @@ export const CustomerOperationsCustomerConversation: React.FC = () => {
         '/api/customer-operations/public/conversations/messages',
         {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body: reply }),
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key':messageKey.current },
+        body: JSON.stringify({ body: reply, attachmentIds:files.map(f=>f.id) }),
         }
       );
+      messageKey.current=crypto.randomUUID();setFiles([]);
       setReply('');
       await loadConversation();
       setNotice('Your reply was sent.');
@@ -112,7 +120,7 @@ export const CustomerOperationsCustomerConversation: React.FC = () => {
             : data?.messages.length ? data.messages.map((message) => (
               <article key={message.id} className={`max-w-[90%] rounded-xl border p-4 ${message.authorType === 'customer' ? 'ml-auto border-blue-100 bg-blue-50' : 'border-slate-200 bg-slate-50'}`}>
                 <p className="text-xs font-medium text-slate-600">{message.authorType === 'customer' ? 'You' : 'Support team'}</p>
-                <p className="mt-2 whitespace-pre-wrap break-words text-sm text-slate-800">{message.body}</p>
+                <p className="mt-2 whitespace-pre-wrap break-words text-sm text-slate-800">{message.body}</p><CustomerOperationsFiles files={message.attachments||[]} publicToken={token} onError={setError}/>
                 <time className="mt-2 block text-right text-[11px] text-slate-500">{new Date(message.createdAt).toLocaleString()}</time>
               </article>
             )) : data && <p className="text-center text-sm text-slate-500">No customer-visible messages yet.</p>}
@@ -121,6 +129,7 @@ export const CustomerOperationsCustomerConversation: React.FC = () => {
         {data && (
           <form onSubmit={sendReply} className="border-t border-slate-200 p-5 sm:p-8">
             <label htmlFor="customer-conversation-reply" className="mb-2 block text-sm font-medium">Your reply</label>
+            <CustomerOperationsFiles files={files} publicToken={token} onError={setError} onChange={value=>{messageKey.current=crypto.randomUUID();setFiles(value);}}/>
             <textarea
               id="customer-conversation-reply"
               required
@@ -128,7 +137,7 @@ export const CustomerOperationsCustomerConversation: React.FC = () => {
               maxLength={3000}
               rows={4}
               value={reply}
-              onChange={(event) => setReply(event.target.value)}
+              onChange={(event) => (messageKey.current=crypto.randomUUID(),setReply(event.target.value))}
               className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
               placeholder="Write your message…"
             />
@@ -141,6 +150,7 @@ export const CustomerOperationsCustomerConversation: React.FC = () => {
           </form>
         )}
       </div>
-    </main>
+    {data && <CustomerOperationsFeedback token={token} />}
+      </main>
   );
 };

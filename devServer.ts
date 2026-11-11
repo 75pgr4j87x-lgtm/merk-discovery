@@ -1,3 +1,6 @@
+import { runOperationsJobs } from './customerOperationsJobs.js';
+import { getFirestore } from 'firebase-admin/firestore';
+import { getFirebaseApp } from './serverStore.js';
 import { createServer as createViteServer } from 'vite';
 import express from 'express';
 import path from 'node:path';
@@ -20,6 +23,10 @@ async function start() {
     app.use(vite.middlewares);
   }
 
+  if(process.env.NODE_ENV!=='production'&&process.env.CUSTOMER_OPERATIONS_LOCAL_JOBS==='true'){
+    const tick=()=>runOperationsJobs(getFirestore(getFirebaseApp())).catch(()=>console.error('Local operations scheduler failed; verify Firebase access.'));
+    void tick();setInterval(()=>void tick(),60000).unref();
+  }
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`DiscoveryFlow server running on http://0.0.0.0:${PORT}`);
   });

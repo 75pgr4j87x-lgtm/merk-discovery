@@ -1,5 +1,6 @@
 import React from 'react';
-import { User } from 'firebase/auth';
+import { User, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
+import { auth } from '../services/auth';
 import { googleSignIn, logout } from '../services/auth';
 import { LogOut, User as UserIcon } from 'lucide-react';
 
@@ -7,12 +8,14 @@ interface GoogleSignInButtonProps {
   user: User | null;
   onAuthChange: (user: User | null) => void;
   isLoading?: boolean;
+  identityOnly?: boolean;
 }
 
 export const GoogleSignInButton: React.FC<GoogleSignInButtonProps> = ({
   user,
   onAuthChange,
   isLoading = false,
+  identityOnly = false,
 }) => {
   const [signingIn, setSigningIn] = React.useState(false);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
@@ -21,7 +24,7 @@ export const GoogleSignInButton: React.FC<GoogleSignInButtonProps> = ({
     try {
       setErrorMsg(null);
       setSigningIn(true);
-      const res = await googleSignIn();
+      const res = identityOnly ? await signInWithPopup(auth, new GoogleAuthProvider()) : await googleSignIn();
       if (res?.user) {
         onAuthChange(res.user);
       }

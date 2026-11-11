@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf public dist server.js",
     "lint": "tsc --noEmit",
+    "test:customer-operations": "node --import tsx --test tests/customerOperations*.test.ts",
     "migrate:firestore": "tsx scripts/migrate-json-to-firestore.ts"
   },
   "dependencies": {

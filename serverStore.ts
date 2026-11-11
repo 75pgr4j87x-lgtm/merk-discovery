@@ -1,3 +1,5 @@
+import { MessagingError, linkedTicketIds, messageOperationId, bufferedTransaction } from './customerOperationsMessaging.js';
+import { applyTicketOperations } from './customerOperationsOperations.js';
 import {
   applicationDefault,
   cert,
@@ -60,6 +62,7 @@ const FIRESTORE_BATCH_LIMIT = 450;
 
 interface StoredCustomerOperationsConversation extends CustomerOperationsConversation {
   customerLinkTokenHash: string | null;
+  subjectSearch?: string;
 }
 
 export interface ProjectTask {
@@ -223,7 +226,11 @@ let firebaseApp: App | undefined;
 export function getFirebaseApp(): App {
   if (!firebaseApp) {
     const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
+    const emulatorHost = process.env.FIRESTORE_EMULATOR_HOST;
+    if (emulatorHost && (!process.env.GCLOUD_PROJECT?.startsWith('demo-') || !/^127\.0\.0\.1:\d+$/.test(emulatorHost) || process.env.NODE_ENV === 'production')) throw new Error('Emulators require a demo project, loopback host and non-production mode.');
     firebaseApp = getApps()[0] || initializeApp({
+      ...(process.env.FIREBASE_STORAGE_BUCKET ? {storageBucket:process.env.FIREBASE_STORAGE_BUCKET} : {}),
+      ...(emulatorHost ? {projectId:process.env.GCLOUD_PROJECT,storageBucket:`${process.env.GCLOUD_PROJECT}.appspot.com`} : {}),
       credential: serviceAccount
         ? cert(JSON.parse(serviceAccount))
         : applicationDefault(),
@@ -1395,7 +1402,7 @@ export async function createCustomerOperationsBusiness(input: {
     businessName: input.name,
     email: input.ownerEmail,
     role: 'business_owner',
-    active: true,
+    active: false,
     createdAt: now,
     invitedBy: input.createdBy,
   };
@@ -1510,7 +1517,8 @@ export async function saveCustomerOperationsBusinessMembership(input: {
       businessName: business.name,
       email: input.email.trim().toLowerCase(),
       role: input.role,
-      active: true,
+      active: Boolean(membershipSnapshot.exists && membershipSnapshot.get('active') && membershipSnapshot.get('uid')),
+      ...(membershipSnapshot.get('uid') ? { uid: membershipSnapshot.get('uid') as string } : {}),
       createdAt: now,
       invitedBy: input.invitedBy,
     };
@@ -1940,6 +1948,7 @@ export async function createCustomerOperationsTicket(input: {
       || !(assignedMemberSnapshot.data() as CustomerOperationsBusinessMembership).active)) {
       throw new Error('Assigned agent is not an active member of this business.');
     }
+    if(input.assignedTeam){const team=await transaction.get(getCustomerOperationsBusinessesCollection().doc(input.businessId).collection('teams').doc(input.assignedTeam));if(!team.exists||!team.get('active'))throw new Error('Assigned team is not active in this business.');}
     const currentCount = counterSnapshot.exists
       ? Number(counterSnapshot.get('count')) || 1000
       : 1000;
@@ -1968,6 +1977,7 @@ export async function createCustomerOperationsTicket(input: {
       resolvedAt: null,
       createdBy: input.actorEmail,
     };
+    Object.assign(ticket, await applyTicketOperations(db, transaction, ticket, null, eventRef.id, input.actorEmail, 'created', now));
     transaction.set(counterRef, { count: nextCount });
     transaction.create(ticketRef, ticket);
     transaction.create(eventRef, {
@@ -2089,6 +2099,7 @@ export async function updateCustomerOperationsTicket(input: {
         throw new Error('Assigned agent is not an active member of this business.');
       }
     }
+    if(input.changes.assignedTeam){const team=await transaction.get(getCustomerOperationsBusinessesCollection().doc(input.businessId).collection('teams').doc(input.changes.assignedTeam));if(!team.exists||!team.get('active'))throw new Error('Assigned team is not active in this business.');}
     const changedFields = Object.keys(input.changes).filter((key) =>
       current[key as keyof CustomerOperationsTicket] !== input.changes[key as keyof typeof input.changes]
     );
@@ -2110,9 +2121,10 @@ export async function updateCustomerOperationsTicket(input: {
       ...input.changes,
       ...(input.changes.subject !== undefined ? { subjectSearch: input.changes.subject.toLocaleLowerCase() } : {}),
       updatedAt: now,
-      ...(input.changes.status === 'resolved' && current.status !== 'resolved' ? { resolvedAt: now } : {}),
-      ...(input.changes.status && input.changes.status !== 'resolved' && current.status === 'resolved' ? { resolvedAt: null } : {}),
+      ...(input.changes.status && ['resolved','closed'].includes(input.changes.status) && !['resolved','closed'].includes(current.status) ? { resolvedAt: now } : {}),
+      ...(input.changes.status && !['resolved', 'closed'].includes(input.changes.status) && ['resolved', 'closed'].includes(current.status) ? { resolvedAt: null } : {}),
     };
+    Object.assign(next, await applyTicketOperations(db, transaction, next, current, eventRef.id, input.actorEmail, ['resolved','closed'].includes(next.status) && !['resolved','closed'].includes(current.status) ? 'resolved' : 'updated', now));
     transaction.set(ticketRef, next);
     transaction.create(eventRef, {
       id: eventRef.id,
@@ -2222,6 +2234,8 @@ function publicCustomerOperationsConversation(
     customerName: stored.customerName,
     customerEmail: stored.customerEmail,
     ticketId: stored.ticketId,
+    ticketIds: linkedTicketIds(stored),
+    assignedAgent: stored.assignedAgent || '',
     ticketNumber: stored.ticketNumber,
     subject: stored.subject,
     status: stored.status,
@@ -2264,9 +2278,10 @@ export async function createCustomerOperationsConversation(input: {
   subject: string;
   body: string;
   actorEmail: string;
+  requestId?: string;
 }): Promise<CustomerOperationsConversation | null> {
   const db = getFirestore(getFirebaseApp());
-  const conversationId = input.ticketId || randomUUID();
+  const conversationId = input.requestId ? messageOperationId(input.businessId,input.actorEmail,input.requestId) : randomUUID();
   const conversationRef = getCustomerOperationsConversationsCollection().doc(conversationId);
   const messageRef = conversationRef.collection('messages').doc(randomUUID());
   const customerRef = getCustomerOperationsCustomersCollection().doc(input.customerId);
@@ -2296,7 +2311,8 @@ export async function createCustomerOperationsConversation(input: {
     }
     const existingConversation = await transaction.get(conversationRef);
     if (existingConversation.exists) {
-      throw new Error('A conversation already exists for this ticket.');
+      if (existingConversation.get('businessId') === input.businessId && existingConversation.get('createdBy') === input.actorEmail && input.requestId) return publicCustomerOperationsConversation(existingConversation.data() as StoredCustomerOperationsConversation);
+      throw new MessagingError(409,'Conversation creation conflicts with an existing request.');
     }
 
     const conversation: StoredCustomerOperationsConversation = {
@@ -2306,8 +2322,11 @@ export async function createCustomerOperationsConversation(input: {
       customerName: customer.name,
       customerEmail: customer.email,
       ticketId: ticket?.id || null,
+      ticketIds: ticket ? [ticket.id] : [],
+      assignedAgent: '',
       ticketNumber: ticket?.ticketNumber || null,
       subject: input.subject,
+      subjectSearch: input.subject.toLowerCase(),
       status: 'open',
       lastMessagePreview: input.body.slice(0, 180),
       createdAt: now,
@@ -2329,6 +2348,7 @@ export async function createCustomerOperationsConversation(input: {
       body: input.body,
       createdAt: now,
     };
+    if (ticketRef) transaction.create(db.collection('customerOperationsConversationTickets').doc(messageOperationId(input.businessId,conversationId,ticketRef.id)),{businessId:input.businessId,conversationId,ticketId:ticketRef.id,customerId:input.customerId,createdAt:now,createdBy:input.actorEmail});
     transaction.create(conversationRef, conversation);
     transaction.create(messageRef, message);
     transaction.update(customerRef, { updatedAt: now, lastInteractionAt: now });
@@ -2341,7 +2361,7 @@ export async function createCustomerOperationsConversation(input: {
       actorEmail: input.actorEmail,
       createdAt: now,
     } satisfies CustomerOperationsActivity);
-    if (ticketRef) transaction.update(ticketRef, { updatedAt: now });
+    if (ticketRef) transaction.update(ticketRef, { updatedAt: now, ...(!ticket?.firstResponseAt ? { firstResponseAt: now } : {}) });
     return publicCustomerOperationsConversation(conversation);
   });
 }
@@ -2351,11 +2371,23 @@ export async function listCustomerOperationsConversations(input: {
   limit: number;
   cursor?: { updatedAt: string; id: string };
   status?: CustomerOperationsConversationStatus;
+  assignedAgent?: string;
+  search?:string;
 }): Promise<{ items: CustomerOperationsConversation[]; nextCursor: string | null }> {
+  if(input.search){
+    const search=input.search.trim().toLowerCase();
+    let query=getCustomerOperationsConversationsCollection().where('businessId','==',input.businessId).where('subjectSearch','>=',search).where('subjectSearch','<=',search+'\uf8ff').orderBy('subjectSearch').orderBy('id').limit(input.limit+1);
+    if(input.status)query=query.where('status','==',input.status);
+    if(input.assignedAgent!==undefined)query=query.where('assignedAgent','==',input.assignedAgent);
+    if(input.cursor)query=query.startAfter(input.cursor.updatedAt,input.cursor.id);
+    const result=await query.get(),items=result.docs.slice(0,input.limit).map(d=>publicCustomerOperationsConversation(d.data() as StoredCustomerOperationsConversation)),last=result.docs[Math.min(result.size,input.limit)-1];
+    return {items,nextCursor:result.size>input.limit&&last?Buffer.from(JSON.stringify({updatedAt:last.get('subjectSearch'),id:last.id})).toString('base64url'):null};
+  }
   let query = getCustomerOperationsConversationsCollection()
     .where('businessId', '==', input.businessId)
     .orderBy('updatedAt', 'desc')
     .orderBy('id', 'desc');
+  if(input.assignedAgent!==undefined)query=query.where('assignedAgent','==',input.assignedAgent) as typeof query;
   if (input.status) query = query.where('status', '==', input.status) as typeof query;
   if (input.cursor) query = query.startAfter(input.cursor.updatedAt, input.cursor.id) as typeof query;
   const snapshot = await query.limit(input.limit + 1).get();
@@ -2399,10 +2431,13 @@ export async function addCustomerOperationsConversationMessage(input: {
   channel: CustomerOperationsMessageChannel;
   deliveryStatus?: CustomerOperationsMessageDeliveryStatus;
   tokenHash?: string;
+  requestId?: string;
+  attachmentIds?: string[];
+  expectedUpdatedAt?: string;
 }): Promise<CustomerOperationsConversationMessage | null> {
   const db = getFirestore(getFirebaseApp());
   const conversationRef = getCustomerOperationsConversationsCollection().doc(input.conversationId);
-  const messageRef = conversationRef.collection('messages').doc(randomUUID());
+  const messageRef = conversationRef.collection('messages').doc(input.requestId ? messageOperationId(input.businessId,input.conversationId,input.authorEmail || input.tokenHash || 'customer',input.requestId) : randomUUID());
   const activityRef = getCustomerOperationsActivityCollection().doc(randomUUID());
   const now = new Date().toISOString();
   return db.runTransaction(async (transaction) => {
@@ -2417,6 +2452,15 @@ export async function addCustomerOperationsConversationMessage(input: {
       ))) {
       return null;
     }
+    const duplicate = await transaction.get(messageRef);
+    if (duplicate.exists) {
+      if (duplicate.get('body') !== input.body || duplicate.get('visibility') !== input.visibility || duplicate.get('channel') !== input.channel || JSON.stringify((duplicate.get('attachments')||[]).map((a:{id:string})=>a.id))!==JSON.stringify(input.attachmentIds||[])) throw new MessagingError(409,'This idempotency key was already used for a different message.');
+      return duplicate.data() as CustomerOperationsConversationMessage;
+    }
+    if (input.expectedUpdatedAt && input.expectedUpdatedAt !== conversation.updatedAt) throw new MessagingError(409,'Another agent updated this conversation. Review new messages before replying.');
+    const extraIds = linkedTicketIds(conversation).filter(id=>id!==conversation.ticketId);
+    const extraSnapshots = await Promise.all(extraIds.map(id=>transaction.get(getCustomerOperationsTicketsCollection().doc(id))));
+    if(extraSnapshots.some(t=>!t.exists||t.get('businessId')!==input.businessId||t.get('customerId')!==conversation.customerId))throw new MessagingError(409,'A linked ticket is no longer accessible.');
     const customerRef = getCustomerOperationsCustomersCollection().doc(conversation.customerId);
     const customerSnapshot = await transaction.get(customerRef);
     const ticketRef = conversation.ticketId
@@ -2432,8 +2476,14 @@ export async function addCustomerOperationsConversationMessage(input: {
       return null;
     }
 
+    const attachmentIds=input.attachmentIds||[];
+    if(attachmentIds.length>8||new Set(attachmentIds).size!==attachmentIds.length||attachmentIds.some(id=>!/^[0-9a-f-]{36}$/.test(id)))throw new MessagingError(400,'Choose up to eight valid attachments.');
+    const attachmentSnapshots=await Promise.all(attachmentIds.map(id=>transaction.get(db.collection('customerOperationsAttachments').doc(id))));
+    const attachmentOwner=input.authorEmail || input.tokenHash;
+    if(attachmentSnapshots.some(a=>!a.exists||a.get('businessId')!==input.businessId||a.get('conversationId')!==input.conversationId||a.get('owner')!==attachmentOwner||a.get('visibility')!==input.visibility||a.get('messageId')))throw new MessagingError(404,'An attachment is not available for this message.');
     const message: CustomerOperationsConversationMessage = {
       id: messageRef.id,
+      attachments:attachmentSnapshots.map(a=>({id:a.id,name:a.get('name'),mime:a.get('mime'),size:a.get('size')})),
       conversationId: input.conversationId,
       authorType: input.authorType,
       authorEmail: input.authorEmail,
@@ -2445,6 +2495,17 @@ export async function addCustomerOperationsConversationMessage(input: {
       body: input.body,
       createdAt: now,
     };
+    const buffered=bufferedTransaction(transaction);
+    const ticketSnapshots=[...(ticketSnapshot?.exists?[ticketSnapshot]:[]),...extraSnapshots];
+    const updatedTickets=[] as Array<{ref: typeof ticketRef;value:CustomerOperationsTicket;previousStatus:string}>;
+    for(const snapshot of ticketSnapshots){
+      let value={...snapshot.data()} as CustomerOperationsTicket;
+      if(input.authorType==='customer') value=await applyTicketOperations(db,buffered.transaction,value,value,messageRef.id,'customer','customer_reply',now);
+      if(input.authorType==='staff'&&input.visibility==='customer'&&input.channel==='in_app'&&!value.firstResponseAt)value.firstResponseAt=now;
+      updatedTickets.push({ref:snapshot.ref,value,previousStatus:snapshot.get('status')});
+    }
+    buffered.flush();
+    for(const attachment of attachmentSnapshots)transaction.update(attachment.ref,{messageId:messageRef.id});
     transaction.create(messageRef, message);
     transaction.update(conversationRef, {
       lastMessagePreview: input.body.slice(0, 180),
@@ -2461,7 +2522,10 @@ export async function addCustomerOperationsConversationMessage(input: {
       actorEmail: input.authorEmail || 'customer',
       createdAt: now,
     } satisfies CustomerOperationsActivity);
-    if (ticketRef) transaction.update(ticketRef, { updatedAt: now });
+    for(const item of updatedTickets) if(item.ref){
+      transaction.set(item.ref,{...item.value,updatedAt:now});
+      if(item.previousStatus!==item.value.status)transaction.create(item.ref.collection('events').doc(messageRef.id),{id:messageRef.id,action:'customer_reply_reopened',actorEmail:'customer',changes:{status:{from:item.previousStatus,to:item.value.status}},createdAt:now});
+    }
     return message;
   });
 }
@@ -2493,6 +2557,10 @@ export async function updateCustomerOperationsConversationMessageDelivery(input:
       deliveryError: input.status === 'failed' ? input.error || 'Email delivery failed.' : null,
       externalMessageId: input.status === 'sent' ? input.externalMessageId || null : null,
     };
+    const ticketId = conversationSnapshot.get('ticketId');
+    const ticketRef = ticketId ? getCustomerOperationsTicketsCollection().doc(ticketId) : null;
+    const ticketSnapshot = ticketRef && input.status === 'sent' ? await transaction.get(ticketRef) : null;
+    if (message.authorType === 'staff' && ticketRef && ticketSnapshot?.exists && ticketSnapshot.get('businessId') === input.businessId && !ticketSnapshot.get('firstResponseAt')) transaction.update(ticketRef, { firstResponseAt: new Date().toISOString() });
     transaction.set(messageRef, next);
     return next;
   });
@@ -2662,4 +2730,26 @@ export async function loadCustomerOperationsConversationByTokenHash(
     conversation: publicCustomerOperationsConversation(stored),
     messages: await loadCustomerOperationsConversationMessages(stored.id, true),
   };
+}
+// Project only fields needed by the report; never load customer identities,
+// descriptions, notes, messages or link tokens for analytics.
+export async function loadCustomerOperationsReportTickets(
+  businessId: string,
+  range: { start: string; endExclusive: string }
+): Promise<import('./customerOperationsReporting.js').ReportTicket[]> {
+  const snapshot = await getCustomerOperationsTicketsCollection()
+    .where('businessId', '==', businessId)
+    .where('createdAt', '>=', range.start)
+    .where('createdAt', '<', range.endExclusive)
+    .orderBy('createdAt', 'asc')
+    .select('businessId', 'createdAt', 'status', 'priority', 'assignedAgent', 'source', 'category', 'firstResponseAt', 'resolvedAt', 'slaTargetAt', 'reopenCount')
+    .limit(5001).get();
+  return snapshot.docs.map(doc => doc.data() as import('./customerOperationsReporting.js').ReportTicket);
+}
+
+export async function loadCustomerOperationsReportFeedback(businessId:string,range:{start:string;endExclusive:string}):Promise<import('./customerOperationsReporting.js').ReportFeedback[]> {
+  const snapshot=await getCustomerOperationsBusinessesCollection().doc(businessId).collection('surveys')
+    .where('createdAt','>=',range.start).where('createdAt','<',range.endExclusive)
+    .orderBy('createdAt').select('score','resolved','submittedAt').limit(5001).get();
+  return snapshot.docs.map(doc=>doc.data());
 }

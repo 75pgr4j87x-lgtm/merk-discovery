@@ -19,6 +19,7 @@ export interface CustomerOperationsBusinessMembership {
   email: string;
   role: CustomerOperationsBusinessRole;
   active: boolean;
+  uid?: string;
   createdAt: string;
   invitedBy: string;
 }
@@ -27,6 +28,7 @@ export interface CustomerOperationsPlatformMembership {
   email: string;
   role: CustomerOperationsPlatformRole;
   active: boolean;
+  uid?: string;
   createdAt: string;
   invitedBy: string;
 }
@@ -89,6 +91,12 @@ export interface CustomerOperationsTicket {
   source: CustomerOperationsTicketSource;
   createdAt: string;
   updatedAt: string;
+  slaDueAt?: string | null;
+  slaTargetAt?: string | null;
+  slaPolicyMinutes?: number;
+  slaBreachedAt?: string | null;
+  reopenCount?: number;
+  surveyId?: string | null;
   firstResponseAt: string | null;
   resolvedAt: string | null;
   createdBy: string;
@@ -112,7 +120,7 @@ export interface CustomerOperationsTicketEvent {
 export type CustomerOperationsConversationStatus = 'open' | 'closed';
 export type CustomerOperationsMessageVisibility = 'customer' | 'internal';
 export type CustomerOperationsMessageChannel = 'in_app' | 'email' | 'whatsapp';
-export type CustomerOperationsMessageDeliveryStatus = 'not_applicable' | 'pending' | 'sent' | 'failed';
+export type CustomerOperationsMessageDeliveryStatus = 'not_applicable' | 'pending' | 'sent' | 'delivered' | 'read' | 'failed';
 export type CustomerOperationsCallDirection = 'inbound' | 'outbound';
 export type CustomerOperationsCallOutcome =
   | 'answered'
@@ -128,6 +136,8 @@ export interface CustomerOperationsConversation {
   customerName: string;
   customerEmail: string;
   ticketId: string | null;
+  ticketIds?: string[];
+  assignedAgent?: string;
   ticketNumber: string | null;
   subject: string;
   status: CustomerOperationsConversationStatus;
@@ -138,7 +148,10 @@ export interface CustomerOperationsConversation {
   customerLinkExpiresAt: string | null;
 }
 
+export interface CustomerOperationsAttachment {id:string;name:string;mime:string;size:number;}
+
 export interface CustomerOperationsConversationMessage {
+  attachments?: CustomerOperationsAttachment[];
   id: string;
   conversationId: string;
   authorType: 'staff' | 'customer';
@@ -168,7 +181,8 @@ export interface CustomerOperationsCallLog {
 
 export interface CustomerOperationsChannelCapabilities {
   email: { configured: boolean };
-  whatsapp: { configured: false; provider: null };
+  whatsapp: { configured: boolean; provider: string | null;templates?:Array<{name:string;language:string}> };
+  attachments?:{configured:boolean};
   callLogging: { enabled: true };
 }
 

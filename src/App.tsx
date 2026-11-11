@@ -1,3 +1,4 @@
+import CustomerOperationsInvite from './components/CustomerOperationsInvite';
 import React from 'react';
 import { MerakifosDiscovery } from './components/MerakifosDiscovery';
 import { StudioPortalApp } from './components/studio/StudioPortalApp';
@@ -69,6 +70,8 @@ export default function App() {
   if (pathname === '/customer-operations/conversations') {
     return <CustomerOperationsCustomerConversation />;
   }
+
+  if(pathname === '/studio/customer-operations/invite') return <CustomerOperationsInvite />;
 
   if (pathname === '/studio/customer-operations' || pathname.startsWith('/studio/customer-operations/')) {
     return <CustomerOperationsApp />;

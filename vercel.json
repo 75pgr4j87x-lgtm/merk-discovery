@@ -37,5 +37,11 @@
       "source": "/feedback/:path*",
       "destination": "/"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/customer-operations/jobs",
+      "schedule": "*/5 * * * *"
+    }
   ]
 }
