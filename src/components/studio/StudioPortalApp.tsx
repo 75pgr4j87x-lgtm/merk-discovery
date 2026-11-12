@@ -638,14 +638,8 @@ export const StudioPortalApp: React.FC<{initialView?:'studio'|'support'}> = ({in
             </span>
           </div>
 
-          <WorkspaceNavigation active={isSupportView?'support':'studio'} supportOnly={supportOnly} />
-
           <div className="flex max-w-full flex-wrap items-center justify-end gap-2.5">
-            {(isStudioOwner || accessRole === 'admin') && (
-              <a href="/studio/beta-feedback" className="inline-flex items-center gap-2 rounded-full border border-[#E5EADF] bg-white px-3 py-1.5 text-xs text-[#3F4A32] hover:border-[#7C8B5F]">
-                <Ticket className="h-3.5 w-3.5 text-[#7C8B5F]" /><span>BetaDesk</span>
-              </a>
-            )}
+            <WorkspaceNavigation active={isSupportView?'support':'studio'} supportOnly={supportOnly} showBetaDesk={isStudioOwner || accessRole === 'admin'} />
             {isStudioOwner && <button onClick={() => setIsInviteManagerOpen(true)} aria-label="Studio access" title="Studio access" className="inline-flex items-center gap-2 rounded-full border border-[#E5EADF] bg-white px-3 py-1.5 text-xs text-[#3F4A32] hover:border-[#7C8B5F]">
               <Key className="h-3.5 w-3.5 text-[#7C8B5F]" /><span className="hidden sm:inline">Studio access</span>
             </button>}

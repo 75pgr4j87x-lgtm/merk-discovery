@@ -1,11 +1,12 @@
 import React from 'react';
-import { Headphones, LayoutDashboard } from 'lucide-react';
+import { Headphones, LayoutDashboard, Ticket } from 'lucide-react';
 
-export const WorkspaceNavigation: React.FC<{ active: 'studio' | 'support';supportOnly?:boolean }> = ({ active,supportOnly=false }) => (
+export const WorkspaceNavigation: React.FC<{ active: 'studio' | 'support';supportOnly?:boolean;showBetaDesk?:boolean }> = ({ active,supportOnly=false,showBetaDesk=false }) => (
   <nav aria-label="Workspace navigation" className="flex flex-wrap items-center gap-2">
     {[
       { id: 'studio', label: 'Responses & Briefs', href: '/studio', icon: LayoutDashboard },
-      { id: 'support', label: 'Customer Support', href: '/studio/customer-operations', icon: Headphones },
+      ...(showBetaDesk ? [{ id: 'betadesk', label: 'BetaDesk', href: '/studio/beta-feedback', icon: Ticket }] : []),
+      { id: 'support', label: 'Customer Operations', href: '/studio/customer-operations', icon: Headphones },
     ].filter(item=>!supportOnly||item.id==='support').map(({ id, label, href, icon: Icon }) => (
       <a
         key={id}
