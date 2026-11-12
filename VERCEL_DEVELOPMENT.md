@@ -22,11 +22,11 @@ Use Vercel **Project Settings → Environment Variables → Preview**, restricte
 - `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_APP_ID`: the development Firebase web app's public configuration. These are browser configuration, never private service-account credentials.
 - `STUDIO_OWNER_EMAIL`: the verified account used to bootstrap the development Platform Super Admin. Keep it server-only.
 - `FIREBASE_STORAGE_BUCKET`: the development project's private bucket for attachments. Optionally set the matching `VITE_FIREBASE_STORAGE_BUCKET` browser configuration.
-- `PUBLIC_APP_URL`: this development branch origin for app features that use the canonical URL. Customer Operations specifically prefers Vercel's trusted branch/deployment URL in Preview, so production canonical URLs cannot redirect its invitation/customer links to production.
+- `PUBLIC_APP_URL`: this development branch origin for app features that use the canonical URL. Customer Operations always uses the fixed origin from `deployment-domains.json` in Preview, so production canonical URLs cannot redirect its invitation/customer links to production.
 
 The server rejects a Preview configuration that is absent, inconsistent, or points at the committed production Firebase project. It also rejects a configured service-account project mismatch. Emulator mode remains unavailable in production builds. An auth screen loading alone does not establish backend readiness.
 
-In the **development** Firebase Console, enable the intended Google sign-in provider and add `merk-discoveryflow-git-dev-merk3.vercel.app` to authorized domains. Deploy `firestore.rules`, `firestore.indexes.json`, and private Storage rules only to that development project; never use the production project for these tests. The first successful verified owner login binds the platform owner UID. Other users must claim UID-bound invitations.
+In the **development** Firebase Console, enable the intended Google sign-in provider and verify that the fixed hostname is already in authorized domains. Do not add changing deployment hostnames. Deploy `firestore.rules`, `firestore.indexes.json`, and private Storage rules only to that development project; never use the production project for these tests. The first successful verified owner login binds the platform owner UID. Other users must claim UID-bound invitations.
 
 Email, WhatsApp and AI remain disconnected unless their corresponding server settings are explicitly supplied. Use development-only provider accounts and test recipients when enabling them. Do not copy production tokens into a shared test environment.
 
@@ -38,4 +38,16 @@ Email, WhatsApp and AI remain disconnected unless their corresponding server set
 4. Sign in with the configured development owner, create two development businesses, claim their invitations with separate accounts, then exercise customer/ticket/inbox/attachment/feedback/report flows and cross-business denials.
 5. Run provider tests only with authorized development accounts. A preview build does not establish end-to-end provider success.
 
-The current cloud task has no Vercel token or local project link. Its proxy blocks the documented preview and GitHub status API until the saved network additions are applied. The network draft preserves the previous emulator download domain and adds `api.github.com`, `api.vercel.com`, and `merk-discoveryflow-git-dev-merk3.vercel.app`. Save those additions in cloud environment settings to let the agent inspect deployment checks and the live site. No environment publication was performed by the agent.
+## Fixed hostname assignment
+
+Preview sign-in entry points send users to the fixed hostname. Preview invitation and tester links use that same origin. Keep `deployment-domains.json` as the shared source of this policy.
+
+After a successful dev deployment, run the guarded alias helper with its deployment ID and full Git SHA:
+
+```sh
+python scripts/assign-development-domain.py --deployment-id <deployment-id> --expected-sha <full-dev-sha>
+```
+
+The default is read-only. Repeat with `--apply` to assign the alias after review. The helper checks Firebase authorized domains, deployment readiness, project ownership and commit identity, and refuses production deployments. Supply the Preview Firebase public configuration through `VITE_FIREBASE_API_KEY` and `VITE_FIREBASE_PROJECT_ID` when it differs from the repository default. Supply `VERCEL_TOKEN` securely through environment settings, never in chat or source control. Network access requires `api.vercel.com` and `identitytoolkit.googleapis.com`.
+
+At the latest check, the fixed hostname still served an older build. Its Firebase trust and alias reassignment remain unverified because this workspace lacks Vercel credentials and the saved Identity Toolkit network addition has not been applied. A pushed commit alone does not complete the alias update.

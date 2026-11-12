@@ -1,3 +1,4 @@
+import deploymentDomains from '../../deployment-domains.json';
 import React from 'react';
 import { User, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
 import { auth } from '../services/auth';
@@ -49,6 +50,11 @@ export const GoogleSignInButton: React.FC<GoogleSignInButtonProps> = ({
       console.error('Logout failed:', err);
     }
   };
+
+  if(import.meta.env.VITE_DEPLOYMENT_ENV==='preview'&&window.location.origin!==deploymentDomains.developmentOrigin){
+    const destination=new URL(window.location.pathname+window.location.search+window.location.hash,deploymentDomains.developmentOrigin);
+    return <div className="max-w-xs text-sm"><a href={destination.toString()} referrerPolicy="no-referrer" className="inline-flex rounded-lg border border-[#E5EADF] bg-white px-4 py-2 text-[#3F4A32] underline">Open development Studio</a><p className="mt-2 text-xs text-slate-600">Use the fixed development address for Google sign-in.</p></div>;
+  }
 
   if (user) {
     return (
@@ -126,15 +132,15 @@ export const GoogleSignInButton: React.FC<GoogleSignInButtonProps> = ({
       {errorMsg && (
         errorMsg === 'unauthorized-domain' ? (
           <div role="alert" className="mt-2 max-w-[280px] text-left text-[11px] leading-relaxed text-rose-600">
-            <p>This domain is not enabled for Firebase sign-in:</p>
+            <p>Google sign-in is not authorized for this address in the configured Firebase project:</p>
             <code className="block break-all font-mono">{window.location.hostname}</code>
             <a
-              href="https://console.firebase.google.com/project/gen-lang-client-0961556565/authentication/settings"
+              href={`https://console.firebase.google.com/project/${encodeURIComponent(auth.app.options.projectId || '')}/authentication/settings`}
               target="_blank"
               rel="noreferrer"
               className="mt-1 inline-block underline"
             >
-              Add it under Authentication &gt; Settings &gt; Authorized domains.
+              Review the authorized domains for this Firebase project.
             </a>
           </div>
         ) : (

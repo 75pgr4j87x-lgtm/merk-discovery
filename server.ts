@@ -400,7 +400,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
   const betaDeskAppBaseUrl = (req?: express.Request) => {
     const deploymentUrl = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null;
     const configuredUrl = process.env.VERCEL_ENV === 'preview'
-      ? deploymentUrl || process.env.PUBLIC_APP_URL
+      ? operationsApplicationOrigin(req?.get('host') || '')
       : process.env.PUBLIC_APP_URL || deploymentUrl;
     const requestHost = req?.get('host') || '';
     const localUrl = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(requestHost)
@@ -415,10 +415,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     return url;
   };
   const studioAccessUrl = (req: express.Request, path: string) => {
-    const branchUrl = process.env.VERCEL_ENV === 'preview' && process.env.VERCEL_BRANCH_URL
-      ? `https://${process.env.VERCEL_BRANCH_URL}`
-      : null;
-    return new URL(path, branchUrl || betaDeskAppBaseUrl(req)).toString();
+    return new URL(path, betaDeskAppBaseUrl(req)).toString();
   };
   const betaDeskPublicUrl = (req: express.Request, token: string) => {
     const url = betaDeskAppBaseUrl(req);
@@ -499,8 +496,9 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     const providerError = typeof req.query.error === 'string' ? req.query.error : '';
     const requestHost = req.get('host') || '';
     const localBase = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(requestHost) ? `http://${requestHost}` : null;
-    const appBase = process.env.PUBLIC_APP_URL
-      || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : localBase);
+    const appBase = process.env.VERCEL_ENV === 'preview'
+      ? operationsApplicationOrigin(requestHost)
+      : process.env.PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : localBase);
     if (!appBase) return res.status(503).send('BetaDesk callback URL is not configured.');
     const settingsUrl = new URL('/studio', appBase);
     if (providerError || !code || !state) {

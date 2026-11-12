@@ -20,3 +20,7 @@ merakifos_client_responses.xlsx
 
 # Safe local emulator configuration (contains no credentials).
 !firebase.emulators.json
+
+# Python deployment helper caches
+__pycache__/
+*.pyc
