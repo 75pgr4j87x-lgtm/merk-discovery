@@ -1075,7 +1075,18 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
   app.get('/api/customer-operations/health',async (_req,res)=>{
     const config=previewConfiguration();const missing=[...config.missing,...(!ownerEmail?['STUDIO_OWNER_EMAIL']:[])];
     if(!missing.length){
-      try{getFirebaseApp();}catch{missing.push('Valid server credentials matching the development Firebase project');}
+      try{getFirebaseApp();}catch(error){
+        const raw=process.env.FIREBASE_SERVICE_ACCOUNT;
+        if(!raw)missing.push('FIREBASE_SERVICE_ACCOUNT is missing');
+        else{
+          try{
+            const account=JSON.parse(raw);
+            if(!account||typeof account!=='object'||!account.project_id||!account.client_email||!account.private_key)missing.push('FIREBASE_SERVICE_ACCOUNT must contain the complete service-account JSON file');
+            else if(account.project_id!==process.env.FIREBASE_PROJECT_ID)missing.push('FIREBASE_SERVICE_ACCOUNT belongs to a different Firebase project');
+            else missing.push('FIREBASE_SERVICE_ACCOUNT contains an unusable private key or credential');
+          }catch{missing.push('FIREBASE_SERVICE_ACCOUNT is not valid JSON');}
+        }
+      }
     }
     if(!missing.length){
       try{await getFirestore(getFirebaseApp()).doc('_health/readiness').get();}catch{missing.push('Accessible Firestore database in the configured Firebase project');}
