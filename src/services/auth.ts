@@ -5,7 +5,15 @@ import firebaseConfig from '../../firebase-applet-config.json';
 // Initialize Firebase
 const emulatorProject = import.meta.env.VITE_FIREBASE_PROJECT_ID;
 const useEmulators = import.meta.env.DEV && import.meta.env.VITE_USE_FIREBASE_EMULATORS === 'true' && typeof emulatorProject === 'string' && emulatorProject.startsWith('demo-');
-const app = initializeApp(useEmulators ? {...firebaseConfig, projectId:emulatorProject,authDomain:'localhost',storageBucket:`${emulatorProject}.appspot.com`,apiKey:'demo-emulator-key'} : firebaseConfig);
+const environmentFirebase = {
+  ...firebaseConfig,
+  ...(import.meta.env.VITE_FIREBASE_PROJECT_ID ? {projectId:import.meta.env.VITE_FIREBASE_PROJECT_ID} : {}),
+  ...(import.meta.env.VITE_FIREBASE_API_KEY ? {apiKey:import.meta.env.VITE_FIREBASE_API_KEY} : {}),
+  ...(import.meta.env.VITE_FIREBASE_AUTH_DOMAIN ? {authDomain:import.meta.env.VITE_FIREBASE_AUTH_DOMAIN} : {}),
+  ...(import.meta.env.VITE_FIREBASE_APP_ID ? {appId:import.meta.env.VITE_FIREBASE_APP_ID} : {}),
+  ...(import.meta.env.VITE_FIREBASE_STORAGE_BUCKET ? {storageBucket:import.meta.env.VITE_FIREBASE_STORAGE_BUCKET} : {}),
+};
+const app = initializeApp(useEmulators ? {...environmentFirebase, projectId:emulatorProject,authDomain:'localhost',storageBucket:`${emulatorProject}.appspot.com`,apiKey:'demo-emulator-key'} : environmentFirebase);
 export const auth = getAuth(app);
 if(useEmulators) connectAuthEmulator(auth,'http://127.0.0.1:9099');
 

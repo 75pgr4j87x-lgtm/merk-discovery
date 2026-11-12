@@ -3,6 +3,8 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "packageManager": "bun@1.4.4",
+  "engines": { "node": "24.x" },
   "scripts": {
     "dev": "tsx devServer.ts",
     "start": "NODE_ENV=production tsx devServer.ts",
@@ -10,6 +12,7 @@
     "preview": "vite preview",
     "clean": "rm -rf public dist server.js",
     "lint": "tsc --noEmit",
+    "test:customer-operations:e2e": "node tests/customerOperations.e2e.mjs",
     "test:customer-operations": "node --import tsx --test tests/customerOperations*.test.ts",
     "migrate:firestore": "tsx scripts/migrate-json-to-firestore.ts"
   },

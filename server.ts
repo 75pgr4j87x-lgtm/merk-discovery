@@ -1,3 +1,5 @@
+import { operationsApplicationOrigin,previewConfiguration } from './customerOperationsDeployment.js';
+import { claimEmailDelivery,definitiveSmtpFailure } from './customerOperationsDelivery.js';
 import { metaSignature, resendSignature, receiveWhatsApp, receiveResendEmail, whatsAppConnections, sendWhatsApp, ChannelError } from './customerOperationsChannels.js';
 import { runOperationsJobs } from './customerOperationsJobs.js';
 import { secretMatches } from './customerOperationsSecurity.js';
@@ -1057,9 +1059,14 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     return res.json({ allowed: identity.isOwner || Boolean(identity.role), isOwner: identity.isOwner, role: identity.role });
   });
 
+  app.get('/api/customer-operations/health',(_req,res)=>{
+    const config=previewConfiguration();const missing=[...config.missing,...(!ownerEmail?['STUDIO_OWNER_EMAIL']:[])];
+    return res.status(missing.length?503:200).json({status:missing.length?'configuration-required':'ok',environment:process.env.VERCEL_ENV||process.env.NODE_ENV||'development',missing});
+  });
   app.use('/api/customer-operations', (_req, res, next) => {
     res.setHeader('Cache-Control', 'private, no-store');
     res.setHeader('Referrer-Policy', 'no-referrer');
+    const config=previewConfiguration();if(config.missing.length)return res.status(503).json({error:'Development preview needs its separate Firebase configuration.',missing:config.missing});
     next();
   });
 
@@ -1100,12 +1107,8 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
   });
 
   const operationsInviteLink = (req: express.Request, token: string) => {
-    const configured = process.env.PUBLIC_APP_URL;
-    const host = req.get('host') || '';
-    if (!configured && (process.env.NODE_ENV === 'production' || !/^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host))) throw new AccessError(503, 'Set PUBLIC_APP_URL to the canonical HTTPS application origin.');
-    const url = new URL('/studio/customer-operations/invite', configured || `http://${host}`);
-    if (process.env.NODE_ENV === 'production' && url.protocol !== 'https:') throw new AccessError(503, 'PUBLIC_APP_URL must use HTTPS.');
-    url.hash = new URLSearchParams({ invite: token }).toString(); return url.toString();
+    const url=new URL('/studio/customer-operations/invite',operationsApplicationOrigin(req.get('host')||''));
+    url.hash=new URLSearchParams({invite:token}).toString();return url.toString();
   };
   app.post('/api/customer-operations/invitations/claim', async (req, res) => {
     const identity = await verifyCustomerOperationsIdentity(req, res); if (!identity) return;
@@ -1381,17 +1384,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     businessId: string,
     conversationId: string
   ) => {
-    const configuredBaseUrl = process.env.PUBLIC_APP_URL?.trim();
-    const baseUrl = configuredBaseUrl
-      || (process.env.NODE_ENV === 'production' ? '' : `${req.protocol}://${req.get('host')}`);
-    if (!baseUrl) throw new Error('PUBLIC_APP_URL must be configured for customer conversation links.');
-    const link = new URL('/customer-operations/conversations', baseUrl);
-    if (!['http:', 'https:'].includes(link.protocol) || link.username || link.password) {
-      throw new Error('Customer conversation links are not configured correctly.');
-    }
-    if (process.env.NODE_ENV === 'production' && link.protocol !== 'https:') {
-      throw new Error('Customer conversation links must use HTTPS.');
-    }
+    const link = new URL('/customer-operations/conversations',operationsApplicationOrigin(req.get('host')||''));
     const token = randomBytes(32).toString('base64url');
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     const conversation = await setCustomerOperationsConversationCustomerLink({
@@ -1408,7 +1401,8 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     req: express.Request,
     businessId: string,
     conversationId: string,
-    messageId: string
+    messageId: string,
+    retry=false
   ) => {
     const [conversationResult, message] = await Promise.all([
       loadCustomerOperationsConversation(businessId, conversationId),
@@ -1419,6 +1413,8 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     if (!message || message.channel !== 'email' || message.visibility !== 'customer') {
       throw new Error('Email message was not found.');
     }
+    const delivery=await claimEmailDelivery(getFirestore(getFirebaseApp()),businessId,conversationId,messageId,retry);
+    if(!delivery.claimed)return message;
     try {
       const recipient = sanitizeEmail(conversation.customerEmail);
       if (!recipient.isValid) throw new Error('Customer does not have a valid email address.');
@@ -1439,8 +1435,10 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
         externalMessageId,
       });
       if (!delivered) throw new Error('Email delivery status could not be recorded.');
+      await delivery.lease.update({state:'sent',completedAt:new Date().toISOString()});
       return delivered;
     } catch (error) {
+      await delivery.lease.update({state:definitiveSmtpFailure(error)?'failed':'uncertain',completedAt:new Date().toISOString()}).catch(()=>{});
       await updateCustomerOperationsConversationMessageDelivery({
         businessId,
         conversationId,
@@ -1978,6 +1976,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
         if (error instanceof Error && error.message === 'Business does not exist or is inactive.') {
           return res.status(404).json({ error: 'Business workspace not found.' });
         }
+        if(error instanceof MessagingError)return res.status(error.status).json({error:error.message});
         console.error('Failed to create Customer Operations conversation:', error);
         return res.status(500).json({ error: 'Could not create the conversation.' });
       }
@@ -2020,6 +2019,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
         return res.status(404).json({ error: 'Conversation not found.' });
       }
       const requestId=req.get('Idempotency-Key');if(!validRequestId(requestId))return res.status(400).json({error:'A valid Idempotency-Key header is required.'});
+      if(!Number.isInteger(req.body?.expectedRevision)||req.body.expectedRevision<0)return res.status(400).json({error:'Refresh the conversation to obtain its current revision.'});
       if(typeof req.body?.expectedUpdatedAt!=='string'||!Number.isFinite(Date.parse(req.body.expectedUpdatedAt)))return res.status(400).json({error:'Refresh the conversation before replying.'});
       const body = sanitizePlainText(req.body?.body, 3000);
       const visibility = req.body?.visibility;
@@ -2052,6 +2052,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
           authorType: 'staff',
           requestId,
           attachmentIds:Array.isArray(req.body?.attachmentIds)?req.body.attachmentIds:[],
+          expectedRevision:req.body.expectedRevision,
           expectedUpdatedAt:typeof req.body?.expectedUpdatedAt==='string'?req.body.expectedUpdatedAt:undefined,
           authorEmail: res.locals.customerOperationsEmail,
           visibility,
@@ -2073,6 +2074,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
             );
             return res.status(201).json(delivered);
           } catch (error) {
+            if(error instanceof MessagingError)return res.status(error.status).json({error:error.message});
             console.error('Failed to deliver Customer Operations conversation email:', error);
             const failedMessage = await loadCustomerOperationsConversationMessage(
               req.params.businessId,
@@ -2118,21 +2120,16 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
         if (message.deliveryStatus !== 'failed') {
           return res.status(409).json({ error: 'Only failed email messages can be retried.' });
         }
-        const queuedMessage = await updateCustomerOperationsConversationMessageDelivery({
-          businessId: req.params.businessId,
-          conversationId,
-          messageId,
-          status: 'pending',
-        });
-        if (!queuedMessage) return res.status(404).json({ error: 'Email message not found.' });
         const delivered = await deliverCustomerOperationsEmailMessage(
           req,
           req.params.businessId,
           conversationId,
-          messageId
+          messageId,
+          true
         );
         return res.json(delivered);
       } catch (error) {
+        if(error instanceof MessagingError)return res.status(error.status).json({error:error.message});
         console.error('Failed to retry Customer Operations conversation email:', error);
         await updateCustomerOperationsConversationMessageDelivery({
           businessId: req.params.businessId,

@@ -32,7 +32,7 @@ export class CustomerOperationsAccessStore {
       const [member,business]=await Promise.all([tx.get(memberRef),input.businessId?tx.get(this.db.collection('customerOperationsBusinesses').doc(input.businessId)):Promise.resolve(null)]);
       if(input.scope==='business'&&(!business?.exists||business.get('status')!=='active'))throw new AccessError(404,'Active business not found.');
       if(member.exists&&member.get('active')&&member.get('role')==='business_owner'&&input.role!=='business_owner')throw new AccessError(409,'The business owner cannot be downgraded.');
-      tx.create(this.db.collection('customerOperationsInvitations').doc(id),record);
+      tx.create(this.db.collection('customerOperationsInvitations').doc(id),{...record,grantVersion:member.exists?member.get('grantVersion')||0:0});
       tx.create(this.db.collection('customerOperationsAuditLogs').doc(randomUUID()),{action:'invitation_created',actorEmail:input.actor,targetId:id,businessId:input.businessId||null,createdAt:now});
     });
     return {id,token,expiresAt:record.expiresAt};
@@ -44,18 +44,20 @@ export class CustomerOperationsAccessStore {
     return this.db.runTransaction(async tx=>{
       const ref=query.docs[0].ref,s=await tx.get(ref),v=s.data()!;
       if(v.revokedAt||v.expiresAt<=new Date().toISOString()||v.email!==email)throw new AccessError(403,'This invitation requires the invited verified account and must be unexpired.');
-      if(v.claimedUid) {if(v.claimedUid===uid)return {success:true};throw new AccessError(409,'Invitation has already been claimed.');}
       const memberRef=v.scope==='platform'?this.db.collection('customerOperationsPlatformMemberships').doc(emailKey(email)):this.db.collection('customerOperationsBusinessMemberships').doc(`${v.businessId}_${emailKey(email)}`);
       const [member,platform,businesses,business]=await Promise.all([
         tx.get(memberRef),tx.get(this.db.collection('customerOperationsPlatformMemberships').doc(emailKey(email))),tx.get(this.db.collection('customerOperationsBusinessMemberships').where('email','==',email)),v.scope==='business'?tx.get(this.db.collection('customerOperationsBusinesses').doc(v.businessId)):Promise.resolve(null),
       ]);
+      const currentVersion=member.exists?member.get('grantVersion')||0:0;
+      if(v.claimedUid){if(v.claimedUid===uid&&member.get('active')&&member.get('uid')===uid&&currentVersion===(v.claimedGrantVersion??v.grantVersion??0))return {success:true};throw new AccessError(409,'Invitation has already been claimed or membership changed.');}
+      if(currentVersion!==(v.grantVersion||0))throw new AccessError(403,'This invitation was superseded or revoked. Ask the workspace owner for a new invitation.');
       if(v.scope==='business'&&(!business?.exists||business.get('status')!=='active'))throw new AccessError(404,'Business is inactive.');
       if((v.scope==='platform'&&businesses.docs.some(d=>d.get('active')))||(v.scope==='business'&&platform.exists&&platform.get('active')))throw new AccessError(409,'Platform and business memberships cannot be combined.');
       if(member.exists&&member.get('uid')&&member.get('uid')!==uid)throw new AccessError(409,'This membership is bound to another account. Revoke the old membership before inviting a replacement.');
       if(member.exists&&member.get('role')==='business_owner'&&v.role!=='business_owner')throw new AccessError(409,'Owner membership cannot be downgraded.');
       const now=new Date().toISOString();
-      tx.set(memberRef,{email,uid,role:v.role,active:true,createdAt:member.exists?member.get('createdAt'):now,invitedBy:v.actor,...(v.scope==='business'?{businessId:v.businessId,businessName:business!.get('name')}:{})});
-      tx.update(ref,{claimedUid:uid,claimedAt:now});tx.create(this.db.collection('customerOperationsAuditLogs').doc(randomUUID()),{action:'invitation_claimed',actorEmail:email,actorUid:uid,targetId:ref.id,businessId:v.businessId,createdAt:now});
+      tx.set(memberRef,{email,uid,role:v.role,active:true,grantVersion:currentVersion+1,createdAt:member.exists?member.get('createdAt'):now,invitedBy:v.actor,...(v.scope==='business'?{businessId:v.businessId,businessName:business!.get('name')}:{})});
+      tx.update(ref,{claimedUid:uid,claimedAt:now,claimedGrantVersion:currentVersion+1});tx.create(this.db.collection('customerOperationsAuditLogs').doc(randomUUID()),{action:'invitation_claimed',actorEmail:email,actorUid:uid,targetId:ref.id,businessId:v.businessId,createdAt:now});
       return {success:true};
     });
   }

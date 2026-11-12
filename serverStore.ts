@@ -1,3 +1,4 @@
+import { assertPreviewConfiguration } from './customerOperationsDeployment.js';
 import { MessagingError, linkedTicketIds, messageOperationId, bufferedTransaction } from './customerOperationsMessaging.js';
 import { applyTicketOperations } from './customerOperationsOperations.js';
 import {
@@ -63,6 +64,7 @@ const FIRESTORE_BATCH_LIMIT = 450;
 interface StoredCustomerOperationsConversation extends CustomerOperationsConversation {
   customerLinkTokenHash: string | null;
   subjectSearch?: string;
+  requestFingerprint?:string;
 }
 
 export interface ProjectTask {
@@ -224,15 +226,19 @@ export interface BetaDeskTester {
 let firebaseApp: App | undefined;
 
 export function getFirebaseApp(): App {
+  assertPreviewConfiguration();
   if (!firebaseApp) {
     const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
+    const parsedServiceAccount=serviceAccount?JSON.parse(serviceAccount):null;
+    if(process.env.FIREBASE_PROJECT_ID&&parsedServiceAccount?.project_id&&process.env.FIREBASE_PROJECT_ID!==parsedServiceAccount.project_id)throw new Error('Server Firebase credentials do not match FIREBASE_PROJECT_ID.');
     const emulatorHost = process.env.FIRESTORE_EMULATOR_HOST;
     if (emulatorHost && (!process.env.GCLOUD_PROJECT?.startsWith('demo-') || !/^127\.0\.0\.1:\d+$/.test(emulatorHost) || process.env.NODE_ENV === 'production')) throw new Error('Emulators require a demo project, loopback host and non-production mode.');
     firebaseApp = getApps()[0] || initializeApp({
+      ...(process.env.FIREBASE_PROJECT_ID ? {projectId:process.env.FIREBASE_PROJECT_ID} : {}),
       ...(process.env.FIREBASE_STORAGE_BUCKET ? {storageBucket:process.env.FIREBASE_STORAGE_BUCKET} : {}),
       ...(emulatorHost ? {projectId:process.env.GCLOUD_PROJECT,storageBucket:`${process.env.GCLOUD_PROJECT}.appspot.com`} : {}),
       credential: serviceAccount
-        ? cert(JSON.parse(serviceAccount))
+        ? cert(parsedServiceAccount)
         : applicationDefault(),
     });
   }
@@ -1517,6 +1523,7 @@ export async function saveCustomerOperationsBusinessMembership(input: {
       businessName: business.name,
       email: input.email.trim().toLowerCase(),
       role: input.role,
+      grantVersion:(membershipSnapshot.get('grantVersion')||0)+1,
       active: Boolean(membershipSnapshot.exists && membershipSnapshot.get('active') && membershipSnapshot.get('uid')),
       ...(membershipSnapshot.get('uid') ? { uid: membershipSnapshot.get('uid') as string } : {}),
       createdAt: now,
@@ -1533,6 +1540,7 @@ export async function saveCustomerOperationsBusinessMembership(input: {
       targetId: `${input.businessId}:${membership.email}`,
       metadata: {
         role: input.role,
+      grantVersion:(membershipSnapshot.get('grantVersion')||0)+1,
         ...(previous?.role ? { previousRole: previous.role } : {}),
       },
       createdAt: now,
@@ -1560,7 +1568,7 @@ export async function deactivateCustomerOperationsBusinessMembership(input: {
     if (membership.role === 'business_owner') {
       throw new Error('Business owner membership cannot be deactivated here.');
     }
-    transaction.update(membershipRef, { active: false });
+    transaction.update(membershipRef, { active: false,grantVersion:(snapshot.get('grantVersion')||0)+1 });
     transaction.create(auditRef, {
       action: 'business_member_deactivated',
       actorEmail: input.actorEmail,
@@ -1655,7 +1663,7 @@ export async function deactivateCustomerOperationsPlatformMembership(
       throw new Error('Platform membership was not found.');
     }
     const membership = snapshot.data() as CustomerOperationsPlatformMembership;
-    transaction.update(membershipRef, { active: false });
+    transaction.update(membershipRef, { active: false,grantVersion:(snapshot.get('grantVersion')||0)+1 });
     transaction.create(auditRef, {
       action: 'platform_member_deactivated',
       actorEmail,
@@ -2236,6 +2244,7 @@ function publicCustomerOperationsConversation(
     ticketId: stored.ticketId,
     ticketIds: linkedTicketIds(stored),
     assignedAgent: stored.assignedAgent || '',
+    revision:stored.revision||0,
     ticketNumber: stored.ticketNumber,
     subject: stored.subject,
     status: stored.status,
@@ -2288,6 +2297,7 @@ export async function createCustomerOperationsConversation(input: {
   const ticketRef = input.ticketId ? getCustomerOperationsTicketsCollection().doc(input.ticketId) : null;
   const activityRef = getCustomerOperationsActivityCollection().doc(randomUUID());
   const now = new Date().toISOString();
+  const requestFingerprint=createHash('sha256').update(JSON.stringify({customerId:input.customerId,ticketId:input.ticketId,subject:input.subject,body:input.body})).digest('hex');
 
   return db.runTransaction(async (transaction) => {
     const businessSnapshot = await transaction.get(getCustomerOperationsBusinessesCollection().doc(input.businessId));
@@ -2311,12 +2321,13 @@ export async function createCustomerOperationsConversation(input: {
     }
     const existingConversation = await transaction.get(conversationRef);
     if (existingConversation.exists) {
-      if (existingConversation.get('businessId') === input.businessId && existingConversation.get('createdBy') === input.actorEmail && input.requestId) return publicCustomerOperationsConversation(existingConversation.data() as StoredCustomerOperationsConversation);
+      if (existingConversation.get('businessId') === input.businessId && existingConversation.get('createdBy') === input.actorEmail && input.requestId && existingConversation.get('requestFingerprint')===requestFingerprint) return publicCustomerOperationsConversation(existingConversation.data() as StoredCustomerOperationsConversation);
       throw new MessagingError(409,'Conversation creation conflicts with an existing request.');
     }
 
     const conversation: StoredCustomerOperationsConversation = {
       id: conversationId,
+      requestFingerprint,
       businessId: input.businessId,
       customerId: customer.id,
       customerName: customer.name,
@@ -2324,6 +2335,7 @@ export async function createCustomerOperationsConversation(input: {
       ticketId: ticket?.id || null,
       ticketIds: ticket ? [ticket.id] : [],
       assignedAgent: '',
+      revision:0,
       ticketNumber: ticket?.ticketNumber || null,
       subject: input.subject,
       subjectSearch: input.subject.toLowerCase(),
@@ -2434,10 +2446,11 @@ export async function addCustomerOperationsConversationMessage(input: {
   requestId?: string;
   attachmentIds?: string[];
   expectedUpdatedAt?: string;
+  expectedRevision?:number;
 }): Promise<CustomerOperationsConversationMessage | null> {
   const db = getFirestore(getFirebaseApp());
   const conversationRef = getCustomerOperationsConversationsCollection().doc(input.conversationId);
-  const messageRef = conversationRef.collection('messages').doc(input.requestId ? messageOperationId(input.businessId,input.conversationId,input.authorEmail || input.tokenHash || 'customer',input.requestId) : randomUUID());
+  const messageRef = conversationRef.collection('messages').doc(input.requestId ? messageOperationId(input.businessId,input.conversationId,input.authorEmail || 'customer',input.requestId) : randomUUID());
   const activityRef = getCustomerOperationsActivityCollection().doc(randomUUID());
   const now = new Date().toISOString();
   return db.runTransaction(async (transaction) => {
@@ -2457,6 +2470,7 @@ export async function addCustomerOperationsConversationMessage(input: {
       if (duplicate.get('body') !== input.body || duplicate.get('visibility') !== input.visibility || duplicate.get('channel') !== input.channel || JSON.stringify((duplicate.get('attachments')||[]).map((a:{id:string})=>a.id))!==JSON.stringify(input.attachmentIds||[])) throw new MessagingError(409,'This idempotency key was already used for a different message.');
       return duplicate.data() as CustomerOperationsConversationMessage;
     }
+    if(input.expectedRevision!==undefined&&input.expectedRevision!==(conversation.revision||0))throw new MessagingError(409,'Another agent updated this conversation. Review new messages before replying.');
     if (input.expectedUpdatedAt && input.expectedUpdatedAt !== conversation.updatedAt) throw new MessagingError(409,'Another agent updated this conversation. Review new messages before replying.');
     const extraIds = linkedTicketIds(conversation).filter(id=>id!==conversation.ticketId);
     const extraSnapshots = await Promise.all(extraIds.map(id=>transaction.get(getCustomerOperationsTicketsCollection().doc(id))));
@@ -2508,6 +2522,7 @@ export async function addCustomerOperationsConversationMessage(input: {
     for(const attachment of attachmentSnapshots)transaction.update(attachment.ref,{messageId:messageRef.id});
     transaction.create(messageRef, message);
     transaction.update(conversationRef, {
+      revision:(conversation.revision||0)+1,
       lastMessagePreview: input.body.slice(0, 180),
       updatedAt: now,
       ...(input.authorType === 'customer' ? { status: 'open' } : {}),

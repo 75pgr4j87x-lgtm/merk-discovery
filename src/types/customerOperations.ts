@@ -20,6 +20,7 @@ export interface CustomerOperationsBusinessMembership {
   role: CustomerOperationsBusinessRole;
   active: boolean;
   uid?: string;
+  grantVersion?:number;
   createdAt: string;
   invitedBy: string;
 }
@@ -29,6 +30,7 @@ export interface CustomerOperationsPlatformMembership {
   role: CustomerOperationsPlatformRole;
   active: boolean;
   uid?: string;
+  grantVersion?:number;
   createdAt: string;
   invitedBy: string;
 }
@@ -138,6 +140,7 @@ export interface CustomerOperationsConversation {
   ticketId: string | null;
   ticketIds?: string[];
   assignedAgent?: string;
+  revision?: number;
   ticketNumber: string | null;
   subject: string;
   status: CustomerOperationsConversationStatus;

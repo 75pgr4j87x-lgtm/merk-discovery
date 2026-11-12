@@ -51,6 +51,7 @@ export const CustomerOperationsInbox: React.FC<{ businessId: string }> = ({ busi
   const [selectedId, setSelectedId] = React.useState('');
   const [detail, setDetail] = React.useState<ConversationDetail | null>(null);
   const draftVersion=React.useRef('');
+  const draftRevision=React.useRef<number|null>(null);
   const [assigneeFilter,setAssigneeFilter]=React.useState('');
   const [search,setSearch]=React.useState('');
   const [statusFilter, setStatusFilter] = React.useState('');
@@ -120,7 +121,7 @@ export const CustomerOperationsInbox: React.FC<{ businessId: string }> = ({ busi
   }, [base, loadConversations]);
 
   React.useEffect(() => {
-    setFiles([]);setReply('');draftVersion.current='';messageKey.current=crypto.randomUUID();
+    setFiles([]);setReply('');draftVersion.current='';draftRevision.current=null;messageKey.current=crypto.randomUUID();
     void loadDetail(selectedId).catch((cause: unknown) => {
       setError(cause instanceof Error ? cause.message : 'Could not load conversation details.');
     });
@@ -171,10 +172,10 @@ export const CustomerOperationsInbox: React.FC<{ businessId: string }> = ({ busi
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Idempotency-Key':messageKey.current },
-          body: JSON.stringify({ body: reply, visibility, channel,attachmentIds:files.map(f=>f.id),expectedUpdatedAt:draftVersion.current||detail.conversation.updatedAt }),
+          body: JSON.stringify({ body: reply, visibility, channel,attachmentIds:files.map(f=>f.id),expectedRevision:draftRevision.current??detail.conversation.revision??0,expectedUpdatedAt:draftVersion.current||detail.conversation.updatedAt }),
         }
       );
-      messageKey.current=crypto.randomUUID();draftVersion.current='';setFiles([]);
+      messageKey.current=crypto.randomUUID();draftVersion.current='';draftRevision.current=null;setFiles([]);
       setReply('');
       await refresh();
       setNotice(visibility === 'customer'
@@ -461,9 +462,9 @@ export const CustomerOperationsInbox: React.FC<{ businessId: string }> = ({ busi
                   </select>
                 </label>
               )}
-              {reply&&draftVersion.current&&draftVersion.current!==detail!.conversation.updatedAt&&<div role="status" className="rounded border border-amber-300 p-3 text-sm">This conversation changed while you were writing. Review the latest messages.<button type="button" onClick={()=>{draftVersion.current=detail!.conversation.updatedAt;setNotice('Latest messages acknowledged. You can now send your draft.');}} className="ml-2 rounded border px-2 py-1">I reviewed the updates</button></div>}
+              {reply&&draftVersion.current&&(draftVersion.current!==detail!.conversation.updatedAt||draftRevision.current!==(detail!.conversation.revision||0))&&<div role="status" className="rounded border border-amber-300 p-3 text-sm">This conversation changed while you were writing. Review the latest messages.<button type="button" onClick={()=>{draftVersion.current=detail!.conversation.updatedAt;draftRevision.current=detail!.conversation.revision||0;setNotice('Latest messages acknowledged. You can now send your draft.');}} className="ml-2 rounded border px-2 py-1">I reviewed the updates</button></div>}
               <CustomerOperationsFiles files={files} onChange={value=>{messageKey.current=crypto.randomUUID();setFiles(value);}} businessId={businessId} conversationId={detail!.conversation.id} visibility={visibility} onError={setError}/>
-              <textarea required minLength={2} maxLength={3000} rows={3} value={reply} onChange={(event) => (draftVersion.current ||= detail?.conversation.updatedAt||'',messageKey.current=crypto.randomUUID(),setReply(event.target.value))} aria-label={visibility === 'customer' ? 'Customer reply' : 'Internal message'} placeholder={visibility === 'customer' ? 'Write a reply…' : 'Write an internal message…'} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              <textarea required minLength={2} maxLength={3000} rows={3} value={reply} onChange={(event) => (draftRevision.current ??= detail?.conversation.revision??0,draftVersion.current ||= detail?.conversation.updatedAt||'',messageKey.current=crypto.randomUUID(),setReply(event.target.value))} aria-label={visibility === 'customer' ? 'Customer reply' : 'Internal message'} placeholder={visibility === 'customer' ? 'Write a reply…' : 'Write an internal message…'} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
               {!capabilities?.email.configured && visibility === 'customer' && (
                 <p className="mt-2 text-xs text-slate-500">Email is unavailable until SMTP is configured on the local server. WhatsApp requires an official provider integration.</p>
               )}
