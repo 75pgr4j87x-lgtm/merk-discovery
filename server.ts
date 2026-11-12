@@ -184,6 +184,11 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
       return { isOwner, role: isOwner ? 'super_admin' as const : invite?.role || null, email, uid: decodedToken.uid };
     } catch (error) {
       if(error instanceof AccessError){res.status(error.status).json({error:error.message});return null;}
+      const code=String((error as {code?:unknown})?.code||'');
+      if(!['auth/id-token-expired','auth/id-token-revoked','auth/argument-error','auth/invalid-id-token','auth/user-disabled','auth/user-not-found'].includes(code)){
+        console.error('Studio access backend unavailable:',code||'configuration');
+        res.status(503).json({error:'Studio could not connect to Firebase. Check the server credentials and that the development Firestore database exists.'});return null;
+      }
       res.status(401).json({ error: 'Invalid or expired studio sign-in.' });
       return null;
     }
@@ -1067,8 +1072,15 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     return res.json({ allowed: identity.isOwner || Boolean(identity.role), isOwner: identity.isOwner, role: identity.role });
   });
 
-  app.get('/api/customer-operations/health',(_req,res)=>{
+  app.get('/api/customer-operations/health',async (_req,res)=>{
     const config=previewConfiguration();const missing=[...config.missing,...(!ownerEmail?['STUDIO_OWNER_EMAIL']:[])];
+    if(!missing.length){
+      try{getFirebaseApp();}catch{missing.push('Valid server credentials matching the development Firebase project');}
+    }
+    if(!missing.length){
+      try{await getFirestore(getFirebaseApp()).doc('_health/readiness').get();}catch{missing.push('Accessible Firestore database in the configured Firebase project');}
+    }
+    res.setHeader('Cache-Control','no-store');
     return res.status(missing.length?503:200).json({status:missing.length?'configuration-required':'ok',environment:process.env.VERCEL_ENV||process.env.NODE_ENV||'development',missing});
   });
   app.use('/api/customer-operations', (_req, res, next) => {
