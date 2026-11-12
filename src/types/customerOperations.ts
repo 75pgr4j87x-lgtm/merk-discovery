@@ -23,6 +23,7 @@ export interface CustomerOperationsBusinessMembership {
   grantVersion?:number;
   createdAt: string;
   invitedBy: string;
+  administrativeAccess?:{purpose:string;expiresAt:string};
 }
 
 export interface CustomerOperationsPlatformMembership {

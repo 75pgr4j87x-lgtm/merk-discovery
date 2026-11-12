@@ -1,3 +1,4 @@
+import {CustomerOperationsAdminAccess,isStudioSuperAdmin} from './customerOperationsAdminAccess.js';
 import { operationsApplicationOrigin,previewConfiguration } from './customerOperationsDeployment.js';
 import { claimEmailDelivery,definitiveSmtpFailure } from './customerOperationsDelivery.js';
 import { metaSignature, resendSignature, receiveWhatsApp, receiveResendEmail, whatsAppConnections, sendWhatsApp, ChannelError } from './customerOperationsChannels.js';
@@ -160,6 +161,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
   app.use(express.json({ limit: '5mb',verify:(req,_res,body)=>{if(req.url?.startsWith('/api/customer-operations/webhooks/'))webhookBodies.set(req as express.Request,Buffer.from(body));} }));
 
   const verifyStudioIdentity = async (req: express.Request, res: express.Response) => {
+    const preview=previewConfiguration();if(preview.missing.length){res.status(503).json({error:'Development preview needs its separate Firebase configuration.',missing:preview.missing});return null;}
     if (!ownerEmail) {
       res.status(503).json({ error: 'Studio Super Admin is not configured on the server.' });
       return null;
@@ -177,10 +179,11 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
         res.status(403).json({ error: 'A verified Google email is required for Studio access.' });
         return null;
       }
-      const isOwner = Boolean(ownerEmail && email === ownerEmail);
+      const isOwner = await isStudioSuperAdmin(getFirestore(getFirebaseApp()),email,decodedToken.uid,ownerEmail);
       const invite = isOwner ? null : await loadStudioInvite(email);
       return { isOwner, role: isOwner ? 'super_admin' as const : invite?.role || null, email, uid: decodedToken.uid };
-    } catch {
+    } catch (error) {
+      if(error instanceof AccessError){res.status(error.status).json({error:error.message});return null;}
       res.status(401).json({ error: 'Invalid or expired studio sign-in.' });
       return null;
     }
@@ -214,10 +217,10 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     const isPlatformSuperAdmin = email === ownerEmail;
     try {
       const accessStore = new CustomerOperationsAccessStore(getFirestore(getFirebaseApp()));
-      if (isPlatformSuperAdmin) await accessStore.bindOwner(email, decodedToken.uid);
+      if (isPlatformSuperAdmin) await isStudioSuperAdmin(getFirestore(getFirebaseApp()),email,decodedToken.uid,ownerEmail);
       const resolved = isPlatformSuperAdmin ? { platformMember: null, businesses: [] } : await accessStore.resolve(email, decodedToken.uid);
       const platformRole = isPlatformSuperAdmin ? 'platform_super_admin' as const : resolved.platformMember?.role || null;
-      const businesses = platformRole ? [] : resolved.businesses;
+      const businesses = isPlatformSuperAdmin ? await new CustomerOperationsAdminAccess(getFirestore(getFirebaseApp())).memberships(decodedToken.uid,email) : platformRole ? [] : resolved.businesses;
       return {
         email,
         uid: decodedToken.uid,
@@ -240,6 +243,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
       return;
     }
     res.locals.customerOperationsEmail = identity.email;
+    res.locals.customerOperationsUid=identity.uid;
     next();
   };
 
@@ -263,6 +267,12 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
   const requireCustomerOperationsBusinessAccess: express.RequestHandler = async (req, res, next) => {
     const identity = await verifyCustomerOperationsIdentity(req, res);
     if (!identity) return;
+    if(identity.isPlatformSuperAdmin){
+      try{
+        await new CustomerOperationsAdminAccess(getFirestore(getFirebaseApp())).record(identity.uid,identity.email,req.params.businessId,req.method,req.originalUrl);
+        res.locals.customerOperationsEmail=identity.email;res.locals.customerOperationsBusinessRole='business_owner';res.locals.customerOperationsSuperAdmin=true;next();return;
+      }catch(e){res.status(e instanceof AccessError?e.status:503).json({error:e instanceof AccessError?e.message:'Administrative access could not be verified.'});return;}
+    }
     const accessStatus = businessAccessStatus(identity, req.params.businessId || '');
     if (accessStatus !== 200) {
       res.status(accessStatus).json({ error: accessStatus === 403
@@ -1131,6 +1141,17 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     if(!isValid||email===ownerEmail||!['business_manager','business_support_agent',...(res.locals.customerOperationsEmail===ownerEmail?['business_owner']:[])].includes(role))return res.status(400).json({error:'Invalid invitation email or role.'});
     try{operationsInviteLink(req,'');const invitation=await new CustomerOperationsAccessStore(getFirestore(getFirebaseApp())).invite({scope:'business',businessId:req.params.businessId,email,role,actor:res.locals.customerOperationsEmail});return res.status(201).json({id:invitation.id,invitationLink:operationsInviteLink(req,invitation.token),expiresAt:invitation.expiresAt});}
     catch(e){return res.status(e instanceof AccessError?e.status:503).json({error:e instanceof AccessError?e.message:'Invitation unavailable.'});}
+  });
+
+  app.post('/api/customer-operations/businesses/:businessId/admin-access',requireCustomerOperationsSuperAdmin,async(req,res)=>{
+    const identity={uid:res.locals.customerOperationsUid as string,email:res.locals.customerOperationsEmail as string};
+    try{return res.json(await new CustomerOperationsAdminAccess(getFirestore(getFirebaseApp())).open({uid:identity.uid,email:identity.email,businessId:req.params.businessId,purpose:typeof req.body?.purpose==='string'?req.body.purpose:''}));}
+    catch(e){return res.status(e instanceof AccessError?e.status:503).json({error:e instanceof AccessError?e.message:'Could not start administrative access.'});}
+  });
+  app.delete('/api/customer-operations/businesses/:businessId/admin-access',requireCustomerOperationsSuperAdmin,async(req,res)=>{
+    const identity={uid:res.locals.customerOperationsUid as string,email:res.locals.customerOperationsEmail as string};
+    try{await new CustomerOperationsAdminAccess(getFirestore(getFirebaseApp())).close(identity.uid,identity.email,req.params.businessId);return res.json({success:true});}
+    catch(e){return res.status(e instanceof AccessError?e.status:503).json({error:e instanceof AccessError?e.message:'Could not close administrative access.'});}
   });
 
   app.get('/api/customer-operations/access', async (req, res) => {

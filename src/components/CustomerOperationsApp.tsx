@@ -45,7 +45,7 @@ async function responseData<T>(response: Response): Promise<T> {
   return data as T;
 }
 
-export const CustomerOperationsApp: React.FC = () => {
+export const CustomerOperationsApp: React.FC<{embedded?:boolean;sessionUser?:User|null}> = ({embedded=false,sessionUser}) => {
   const [user, setUser] = React.useState<User | null>(null);
   const [access, setAccess] = React.useState<CustomerOperationsAccess | null>(null);
   const [isLoading, setIsLoading] = React.useState(true);
@@ -122,6 +122,7 @@ export const CustomerOperationsApp: React.FC = () => {
   }, []);
 
   React.useEffect(() => {
+    if(embedded&&sessionUser){void loadAccess(sessionUser);return;}
     const unsubscribe = initAuth(
       (currentUser) => { void loadAccess(currentUser); },
       () => {
@@ -136,7 +137,7 @@ export const CustomerOperationsApp: React.FC = () => {
     return () => {
       if (typeof unsubscribe === 'function') unsubscribe();
     };
-  }, [loadAccess]);
+  }, [loadAccess,embedded,sessionUser]);
 
   React.useEffect(() => {
     if (isPlatformAdmin) {
@@ -211,6 +212,14 @@ export const CustomerOperationsApp: React.FC = () => {
     }
   };
 
+  const [adminPurpose,setAdminPurpose]=React.useState('');
+  const [adminBusinessId,setAdminBusinessId]=React.useState('');
+  async function openAdminWorkspace(event:React.FormEvent){
+    event.preventDefault();if(!user)return;setIsSaving(true);setActionError('');
+    try{const response=await customerOperationsFetch(`/api/customer-operations/businesses/${adminBusinessId}/admin-access`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({purpose:adminPurpose})});const session=await responseData<{expiresAt:string;purpose:string}>(response);await loadAccess(user);setWorkspaceId(`business:${adminBusinessId}`);setSection('overview');setAdminPurpose('');}
+    catch(e){setActionError(e instanceof Error?e.message:'Could not open the business workspace.');}finally{setIsSaving(false);}
+  }
+  async function closeAdminWorkspace(){if(!user)return;setIsSaving(true);setActionError('');try{await responseData(await customerOperationsFetch(`/api/customer-operations/businesses/${selectedBusinessId}/admin-access`,{method:'DELETE'}));setWorkspaceId('platform');setSection('businesses');await loadAccess(user);}catch(e){setActionError(e instanceof Error?e.message:'Could not close administrative access.');}finally{setIsSaving(false);}}
   const navItems: Array<{ id: Section; label: string; icon: React.ReactNode }> = [
     { id: 'overview', label: 'Overview', icon: <LayoutDashboard size={17} /> },
     { id: 'platform-support', label: isBusinessWorkspace ? 'Contact platform' : 'Platform support', icon: <Inbox size={17} /> },
@@ -229,8 +238,8 @@ export const CustomerOperationsApp: React.FC = () => {
   ];
 
   return (
-    <div className="min-h-screen bg-[#f7f8fa] text-slate-900">
-      <header className="flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-5 py-3 sm:px-8">
+    <div role={embedded?'region':undefined} aria-label={embedded?'Customer Support':undefined} className={`${embedded?'rounded-xl border border-[#E5EADF] overflow-hidden':'min-h-screen'} bg-[#f7f8fa] text-slate-900`}>
+      {!embedded && <header className="flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-5 py-3 sm:px-8">
         <div className="flex items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-900 text-white">
             <Shield size={18} />
@@ -251,23 +260,23 @@ export const CustomerOperationsApp: React.FC = () => {
             setLoadError('');
           }
         }} isLoading={isLoading} />
-      </header>
+      </header>}
 
       {isLoading ? (
-        <main className="mx-auto max-w-3xl px-6 py-20 text-center text-sm text-slate-500">Checking access…</main>
+        <section className="mx-auto max-w-3xl px-6 py-20 text-center text-sm text-slate-500">Checking access…</section>
       ) : !user ? (
-        <main className="mx-auto max-w-lg px-6 py-24 text-center">
+        <section className="mx-auto max-w-lg px-6 py-24 text-center">
           <h1 className="text-2xl font-semibold">Customer Support</h1>
           <p className="mt-3 text-sm text-slate-600">Sign in with your verified Google account to continue.</p>
           {loadError && <p role="alert" className="mt-4 text-sm text-rose-700">{loadError}</p>}
-        </main>
+        </section>
       ) : !access?.allowed ? (
-        <main className="mx-auto max-w-xl px-6 py-24 text-center">
+        <section className="mx-auto max-w-xl px-6 py-24 text-center">
           <h1 className="text-xl font-semibold">No Customer Support access</h1>
           <p className="mt-3 text-sm leading-6 text-slate-600">
             {loadError || `The signed-in account ${access?.email || user.email || ''} has not been assigned a platform or business workspace.`}
           </p>
-        </main>
+        </section>
       ) : (
         <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-[1440px] flex-col md:flex-row">
           <aside className="w-full shrink-0 border-b border-slate-200 bg-white p-4 md:w-64 md:border-b-0 md:border-r">
@@ -310,7 +319,7 @@ export const CustomerOperationsApp: React.FC = () => {
             </nav>
           </aside>
 
-          <main className="min-w-0 flex-1 p-5 sm:p-8">
+          <section className="min-w-0 flex-1 p-5 sm:p-8">
             <div className="mx-auto max-w-5xl">
               <div className="mb-8 flex items-start justify-between gap-4">
                 <div>
@@ -332,6 +341,7 @@ export const CustomerOperationsApp: React.FC = () => {
               </div>
 
               {actionError && <p role="alert" className="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{actionError}</p>}
+              {isPlatformAdmin&&isBusinessWorkspace&&<div role="status" className="mb-4 rounded border border-amber-300 bg-amber-50 p-4 text-sm"><p className="font-semibold">Super Admin business session</p><p>{access.businesses.find(m=>m.businessId===selectedBusinessId)?.administrativeAccess?.purpose} · Ends {new Date(access.businesses.find(m=>m.businessId===selectedBusinessId)?.administrativeAccess?.expiresAt||'').toLocaleTimeString()}</p><button disabled={isSaving} onClick={()=>void closeAdminWorkspace()} className="mt-2 rounded border px-3 py-2">End administrative session</button></div>}
               {invitationLink && <div className="mb-4 rounded border p-4"><label className="text-sm">Private invitation link<input readOnly value={invitationLink} className="mt-2 w-full rounded border p-2" /></label><button className="mt-2 rounded border px-3 py-2" onClick={()=>void navigator.clipboard.writeText(invitationLink).then(()=>setNotice('Invitation link copied.')).catch(()=>setActionError('Copy the link from the field.'))}>Copy invitation</button></div>}
               {notice && <p role="status" className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{notice}</p>}
 
@@ -378,6 +388,8 @@ export const CustomerOperationsApp: React.FC = () => {
                       {isSaving ? 'Creating…' : 'Create workspace'}
                     </button>
                   </form>
+
+                  <form onSubmit={openAdminWorkspace} className="space-y-4 rounded-xl border border-[#E5EADF] bg-white p-6"><h2 className="font-semibold">Manage a business workspace</h2><p className="text-sm text-slate-600">Your Studio Super Admin permissions apply to Customer Support. For private business records, record a purpose to start a 30-minute audited administrative session.</p><label className="block text-sm">Business<select required aria-label="Business for administrative access" value={adminBusinessId} onChange={e=>setAdminBusinessId(e.target.value)} className="mt-1 w-full rounded border p-2"><option value="">Choose a business</option>{businesses.filter(b=>b.status==='active').map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</select></label><label className="block text-sm">Administrative purpose<textarea required minLength={10} maxLength={500} rows={2} value={adminPurpose} onChange={e=>setAdminPurpose(e.target.value)} className="mt-1 w-full rounded border p-2"/></label><button disabled={isSaving} className="rounded bg-slate-900 px-4 py-2 text-sm text-white">Open business workspace</button></form>
 
                   <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
                     <h2 className="border-b border-slate-200 px-6 py-4 font-semibold">Registered businesses</h2>
@@ -448,7 +460,7 @@ export const CustomerOperationsApp: React.FC = () => {
                 <CustomerOperationsCallLogs key={selectedBusinessId} businessId={selectedBusinessId} />
               )}
             </div>
-          </main>
+          </section>
         </div>
       )}
     </div>

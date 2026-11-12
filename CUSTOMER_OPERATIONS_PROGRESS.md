@@ -3,6 +3,14 @@
 **Final audit:** all six phases are not complete against the full master prompt. Local implementation/fixture passes are not live acceptance. See [CUSTOMER_OPERATIONS_FINAL_AUDIT.md](CUSTOMER_OPERATIONS_FINAL_AUDIT.md) for missing features, final checks and browser-access findings.
 
 
+## Latest Studio integration verification — 12 November 2026
+
+Customer Support is rendered as an embedded Studio tab, preserving the Studio header, theme, Super Admin badge and administrative controls. Studio and Support share the same server-side Super Admin identity/owner UID binding. Business/platform members without Studio access use a restricted Support shell without Studio data or admin controls.
+
+Super Admins retain full Support administration. Private business data is managed through explicitly scoped, purpose-recorded 30-minute administrative sessions with a per-request audit trail. Other platform agents remain denied private business access. The Firestore default-deny syntax error discovered during real emulator validation is fixed without weakening its policy.
+
+The official Firebase Auth, Firestore and Storage emulators now run successfully after the environment network publication. All 32 isolated tests and 19 real HTTP/browser/Storage/SMTP end-to-end scenarios passed in the local demo project. Added end-to-end checks verify shared Studio/Super Admin authority, one Studio header/main landmark, preserved Studio access controls, business access/revocation/auditing, and support-only member isolation. Cloud development-project indexes and live external provider acceptance are still separate requirements. Earlier notes about the emulator download being blocked describe the older checkpoint.
+
 ## Current GitHub checkpoint — work in progress
 
 The completion pass following the final audit adds UID-bound invitation claiming and owner binding, narrower Google sign-in scopes for Customer Operations, message idempotency and optimistic concurrency, five-second inbox refresh, explicit many-to-many ticket links, private attachment upload/download boundaries, separate platform support tickets/knowledge/reports, business team APIs, scheduled SLA job boundaries, and signed Meta/Resend webhook integration code. It also fixes actual business role values being replaced with display labels before UI permission checks.

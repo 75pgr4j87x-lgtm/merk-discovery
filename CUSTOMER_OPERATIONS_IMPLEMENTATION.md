@@ -102,3 +102,13 @@ Official Meta WhatsApp connections are server-configured via `CUSTOMER_OPERATION
 `CRON_SECRET` (32+ characters) authorizes `/api/customer-operations/jobs`. The Vercel configuration proposes a five-minute cron; the hosting plan must support that schedule. Saving code does not provision cron or credentials. Local development jobs run only when `CUSTOMER_OPERATIONS_LOCAL_JOBS=true`. No scheduler has been deployed.
 
 The safe `firebase.emulators.json` configuration uses project `demo-merk-ops`, Auth port 9099, Firestore 8080 and Storage 9199 on loopback. Official emulator binaries must be downloaded with normal checksum/TLS verification. The cloud policy currently blocks that download; do not disable TLS or substitute unverified binaries. Browser emulator mode additionally requires Vite development mode, `VITE_USE_FIREBASE_EMULATORS=true` and `VITE_FIREBASE_PROJECT_ID=demo-merk-ops`.
+
+## Customer Support within Studio
+
+Sign in to Studio with the configured Super Admin account, then select **Customer Support** beside **Responses & Briefs**. Support uses the same Studio header and session; no separate Super Admin invitation or second sign-in is required. Support-only members retain their own scoped permissions and do not receive the Studio administration tools.
+
+The Super Admin's Support workspace includes business administration, support-agent invitations and platform reporting. To inspect or manage a business's private support records, choose **Businesses → Manage a business workspace**, enter the business and administrative purpose, then open the workspace. This starts a 30-minute audited owner-level session. Use **End administrative session** to revoke it immediately. Ordinary platform support agents cannot use this flow.
+
+New routes: `POST /api/customer-operations/businesses/:businessId/admin-access` with `{purpose}`, and `DELETE` at the same path. Both require the server-verified Studio Super Admin. The active access response includes only the caller's unexpired business sessions. Session expiry queries use automatic single-field indexing; no new composite index is required for this integration.
+
+`npm run test:customer-operations:e2e` now includes real Firebase-emulator browser checks for the Studio shell, preserved Super Admin controls, scoped business administration, and support-only member isolation. It also verifies the existing ticket/inbox/Storage/SMTP/reporting workflows. These tests use actual emulator Auth tokens and actual server requests, without browser request mocking; they do not establish live external provider or production index readiness.

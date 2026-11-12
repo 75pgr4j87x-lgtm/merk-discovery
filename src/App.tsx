@@ -10,7 +10,6 @@ import { ClientProjectView } from './components/ClientProjectView';
 import { BetaDeskAdmin } from './components/beta-desk/BetaDesk';
 import { TesterLinkRequired, TesterPortal } from './components/beta-desk/TesterPortal';
 import { StudioInviteClaim } from './components/studio/StudioInviteClaim';
-import { CustomerOperationsApp } from './components/CustomerOperationsApp';
 import { CustomerOperationsCustomerConversation } from './components/CustomerOperationsCustomerConversation';
 
 export default function App() {
@@ -74,7 +73,7 @@ export default function App() {
   if(pathname === '/studio/customer-operations/invite') return <CustomerOperationsInvite />;
 
   if (pathname === '/studio/customer-operations' || pathname.startsWith('/studio/customer-operations/')) {
-    return <CustomerOperationsApp />;
+    return <StudioPortalApp initialView="support" />;
   }
 
   if (pathname === '/feedback/submit') {

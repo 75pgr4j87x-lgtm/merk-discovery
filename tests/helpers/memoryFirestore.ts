@@ -31,7 +31,7 @@ class Query {
   startAfter(...v:any[]){const q=this.clone();q.after=v;return q;}
   async get(){
     let rows=[...this.db.rows.entries()].filter(([p])=>p.startsWith(this.path+'/')&&p.split('/').length===this.path.split('/').length+1);
-    rows=rows.filter(([,r])=>this.filters.every(([k,op,v])=>op==='=='?r[k]===v:op==='in'?v.includes(r[k]):op==='>='?typeof r[k]===typeof v&&r[k]>=v:op==='<='?typeof r[k]===typeof v&&r[k]<=v:false));
+    rows=rows.filter(([,r])=>this.filters.every(([k,op,v])=>op==='=='?r[k]===v:op==='in'?v.includes(r[k]):op==='>='?typeof r[k]===typeof v&&r[k]>=v:op==='<='?typeof r[k]===typeof v&&r[k]<=v:op==='>'?typeof r[k]===typeof v&&r[k]>v:op==='<'?typeof r[k]===typeof v&&r[k]<v:false));
     const field=([p,r]:typeof rows[number],k:string)=>k==='__name__'?p.split('/').at(-1):r[k];
     const compare=(x:any,y:any)=>x<y?-1:x>y?1:0;
     rows.sort((a,b)=>{for(const [k,d] of this.orders){const c=compare(field(a,k),field(b,k))*(d==='desc'?-1:1);if(c)return c;}return 0;});
