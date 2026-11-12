@@ -228,7 +228,8 @@ let firebaseApp: App | undefined;
 export function getFirebaseApp(): App {
   assertPreviewConfiguration();
   if (!firebaseApp) {
-    const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
+    // Compatibility for the existing dev-only sensitive variable; Vercel cannot rename it.
+    const serviceAccount = (process.env.VERCEL_ENV==='preview' ? process.env.FIREBASE_SERVICE_ACCOUN : undefined) || process.env.FIREBASE_SERVICE_ACCOUNT;
     const parsedServiceAccount=serviceAccount?JSON.parse(serviceAccount):null;
     if(process.env.FIREBASE_PROJECT_ID&&parsedServiceAccount?.project_id&&process.env.FIREBASE_PROJECT_ID!==parsedServiceAccount.project_id)throw new Error('Server Firebase credentials do not match FIREBASE_PROJECT_ID.');
     const emulatorHost = process.env.FIRESTORE_EMULATOR_HOST;

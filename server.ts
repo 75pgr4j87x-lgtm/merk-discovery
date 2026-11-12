@@ -1076,7 +1076,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     const config=previewConfiguration();const missing=[...config.missing,...(!ownerEmail?['STUDIO_OWNER_EMAIL']:[])];
     if(!missing.length){
       try{getFirebaseApp();}catch(error){
-        const raw=process.env.FIREBASE_SERVICE_ACCOUNT;
+        const raw=(process.env.VERCEL_ENV==='preview'?process.env.FIREBASE_SERVICE_ACCOUN:undefined)||process.env.FIREBASE_SERVICE_ACCOUNT;
         if(!raw)missing.push('FIREBASE_SERVICE_ACCOUNT is missing');
         else{
           try{
