@@ -1,3 +1,4 @@
+import { WorkspaceNavigation } from '../WorkspaceNavigation';
 import React from 'react';
 import { User } from 'firebase/auth';
 import { GoogleSignInButton } from '../GoogleSignInButton';
@@ -584,6 +585,10 @@ export const StudioPortalApp: React.FC = () => {
             Sign in with an invited, verified Google account to review client projects and Studio work.
           </p>
 
+          <div className="mb-6 flex justify-center">
+            <WorkspaceNavigation active="studio" />
+          </div>
+
           {authError && <p role="alert" className="mb-5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">{authError}</p>}
 
           <div className="flex justify-center">
@@ -627,15 +632,12 @@ export const StudioPortalApp: React.FC = () => {
             </span>
           </div>
 
+          <WorkspaceNavigation active="studio" />
+
           <div className="flex max-w-full flex-wrap items-center justify-end gap-2.5">
             {(isStudioOwner || accessRole === 'admin') && (
               <a href="/studio/beta-feedback" className="inline-flex items-center gap-2 rounded-full border border-[#E5EADF] bg-white px-3 py-1.5 text-xs text-[#3F4A32] hover:border-[#7C8B5F]">
                 <Ticket className="h-3.5 w-3.5 text-[#7C8B5F]" /><span>BetaDesk</span>
-              </a>
-            )}
-            {isStudioOwner && (
-              <a href="/studio/customer-operations" className="inline-flex items-center gap-2 rounded-full border border-[#E5EADF] bg-white px-3 py-1.5 text-xs text-[#3F4A32] hover:border-[#7C8B5F]">
-                <Ticket className="h-3.5 w-3.5 text-[#7C8B5F]" /><span>Customer Operations</span>
               </a>
             )}
             {isStudioOwner && <button onClick={() => setIsInviteManagerOpen(true)} aria-label="Studio access" title="Studio access" className="inline-flex items-center gap-2 rounded-full border border-[#E5EADF] bg-white px-3 py-1.5 text-xs text-[#3F4A32] hover:border-[#7C8B5F]">

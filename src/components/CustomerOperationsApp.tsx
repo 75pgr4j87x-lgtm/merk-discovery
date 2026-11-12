@@ -1,3 +1,4 @@
+import { WorkspaceNavigation } from './WorkspaceNavigation';
 import React from 'react';
 import { Building2, CircleUserRound, Inbox, LayoutDashboard, Phone, Shield, Users } from 'lucide-react';
 import { User } from 'firebase/auth';
@@ -229,16 +230,17 @@ export const CustomerOperationsApp: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-[#f7f8fa] text-slate-900">
-      <header className="flex min-h-16 items-center justify-between border-b border-slate-200 bg-white px-5 sm:px-8">
+      <header className="flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-5 py-3 sm:px-8">
         <div className="flex items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-900 text-white">
             <Shield size={18} />
           </div>
           <div>
-            <p className="text-sm font-semibold">Customer Operations</p>
+            <p className="text-sm font-semibold">Customer Support</p>
             <p className="text-xs text-slate-500">Merk Discovery</p>
           </div>
         </div>
+        <WorkspaceNavigation active="support" />
         <GoogleSignInButton identityOnly user={user} onAuthChange={(nextUser) => {
           setUser(nextUser);
           if (nextUser) void loadAccess(nextUser);
@@ -255,13 +257,13 @@ export const CustomerOperationsApp: React.FC = () => {
         <main className="mx-auto max-w-3xl px-6 py-20 text-center text-sm text-slate-500">Checking access…</main>
       ) : !user ? (
         <main className="mx-auto max-w-lg px-6 py-24 text-center">
-          <h1 className="text-2xl font-semibold">Customer Operations</h1>
+          <h1 className="text-2xl font-semibold">Customer Support</h1>
           <p className="mt-3 text-sm text-slate-600">Sign in with your verified Google account to continue.</p>
           {loadError && <p role="alert" className="mt-4 text-sm text-rose-700">{loadError}</p>}
         </main>
       ) : !access?.allowed ? (
         <main className="mx-auto max-w-xl px-6 py-24 text-center">
-          <h1 className="text-xl font-semibold">No Customer Operations access</h1>
+          <h1 className="text-xl font-semibold">No Customer Support access</h1>
           <p className="mt-3 text-sm leading-6 text-slate-600">
             {loadError || `The signed-in account ${access?.email || user.email || ''} has not been assigned a platform or business workspace.`}
           </p>
