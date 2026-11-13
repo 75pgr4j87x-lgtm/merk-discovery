@@ -1,3 +1,4 @@
+import CustomerOperationsGuestIntake from './components/CustomerOperationsGuestIntake';
 import CustomerOperationsInvite from './components/CustomerOperationsInvite';
 import React from 'react';
 import { MerakifosDiscovery } from './components/MerakifosDiscovery';
@@ -65,6 +66,8 @@ export default function App() {
       </>
     );
   }
+
+  if (pathname.startsWith('/customer-operations/report/')) return <CustomerOperationsGuestIntake businessId={pathname.slice('/customer-operations/report/'.length)} />;
 
   if (pathname === '/customer-operations/conversations') {
     return <CustomerOperationsCustomerConversation />;

@@ -1,3 +1,4 @@
+import {intakeRouter} from './customerOperationsIntake.js';
 import {CustomerOperationsAdminAccess,isStudioSuperAdmin} from './customerOperationsAdminAccess.js';
 import { operationsApplicationOrigin,previewConfiguration } from './customerOperationsDeployment.js';
 import { claimEmailDelivery,definitiveSmtpFailure } from './customerOperationsDelivery.js';
@@ -1113,6 +1114,16 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     loadTickets: loadCustomerOperationsReportTickets,
     loadFeedback: loadCustomerOperationsReportFeedback,
   }));
+
+  app.use('/api/customer-operations/intake',intakeRouter(()=>getFirestore(getFirebaseApp())));
+  app.get('/api/customer-operations/businesses/:businessId/guest-intake',requireCustomerOperationsBusinessAccess,async(req,res)=>{
+    try{const b=await getFirestore(getFirebaseApp()).collection('customerOperationsBusinesses').doc(req.params.businessId).get();return res.json({enabled:b.get('guestIntakeEnabled')===true,canManage:['business_owner','business_manager'].includes(res.locals.customerOperationsBusinessRole),link:new URL('/customer-operations/report/'+encodeURIComponent(req.params.businessId),operationsApplicationOrigin(req.get('host')||'')).toString()});}catch{return res.status(503).json({error:'Reporting settings unavailable.'});}
+  });
+  app.put('/api/customer-operations/businesses/:businessId/guest-intake',requireCustomerOperationsBusinessAccess,async(req,res)=>{
+    if(!['business_owner','business_manager'].includes(res.locals.customerOperationsBusinessRole))return res.status(403).json({error:'Owner or manager access required.'});
+    if(typeof req.body?.enabled!=='boolean')return res.status(400).json({error:'Choose whether reporting is enabled.'});
+    try{const db=getFirestore(getFirebaseApp());await db.runTransaction(async tx=>{const ref=db.collection('customerOperationsBusinesses').doc(req.params.businessId),b=await tx.get(ref);if(!b.exists||b.get('status')!=='active')throw new Error('inactive');tx.update(ref,{guestIntakeEnabled:req.body.enabled});tx.create(db.collection('customerOperationsAuditLogs').doc(),{businessId:req.params.businessId,actorEmail:res.locals.customerOperationsEmail,action:'guest_intake_changed',enabled:req.body.enabled,createdAt:new Date().toISOString()});});return res.json({enabled:req.body.enabled});}catch{return res.status(503).json({error:'Reporting settings could not be saved.'});}
+  });
 
   app.use('/api/customer-operations/public', async(req,res,next)=>{
     if(!/^[A-Za-z0-9_-]{43}$/.test(req.get('x-customer-conversation-token')||''))return res.status(404).json({error:'Conversation link invalid or expired.'});

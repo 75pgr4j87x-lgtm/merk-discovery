@@ -1,3 +1,4 @@
+import {GuestIntakeSettings} from './CustomerOperationsGuestIntake';
 import React from 'react';
 import { auth } from '../services/auth';
 import type {
@@ -350,6 +351,7 @@ export const CustomerOperationsBusinessWorkspace: React.FC<{
 
   return (
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1.1fr)_minmax(360px,0.9fr)]">
+      <div className="xl:col-span-2"><GuestIntakeSettings businessId={businessId} /></div>
       <section className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 p-4">
           <div>
