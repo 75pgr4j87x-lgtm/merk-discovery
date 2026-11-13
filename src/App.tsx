@@ -1,7 +1,7 @@
 import CustomerOperationsGuestIntake from './components/CustomerOperationsGuestIntake';
 import CustomerOperationsInvite from './components/CustomerOperationsInvite';
 import React from 'react';
-import { MerakifosDiscovery } from './components/MerakifosDiscovery';
+import { DiscoveryChat } from './components/chat/DiscoveryChat';
 import { StudioPortalApp } from './components/studio/StudioPortalApp';
 import { CookieConsent } from './components/compliance/CookieConsent';
 import { INITIAL_ANSWERS } from './data/discoveryQuestions';
@@ -105,7 +105,7 @@ export default function App() {
   // 2. RENDER: Client-Facing Discovery (Pristine, zero studio portal UI or login buttons for clients)
   return (
     <div className="min-h-screen bg-[#FAF6F1] text-[#3F4A32] flex flex-col justify-between font-sans relative selection:bg-[#7C8B5F]/20 selection:text-[#3F4A32]">
-      <MerakifosDiscovery
+      <DiscoveryChat
         answers={answers}
         onChange={setAnswers}
         onCompleteAndSynthesize={handleCompleteAndSynthesize}

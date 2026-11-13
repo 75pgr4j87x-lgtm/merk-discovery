@@ -1,3 +1,4 @@
+import {ConversationalForm,ChatIdentity} from '../chat/ClientChat';
 import React from 'react';
 import {
   ArrowLeft,
@@ -113,13 +114,14 @@ const TesterShell: React.FC<React.PropsWithChildren<{
   onToggleTheme: () => void;
   onClickCapture?: React.MouseEventHandler<HTMLDivElement>;
 }>> = ({ children, theme, onToggleTheme, onClickCapture }) => (
-  <div className="betadesk-theme min-h-screen bg-[#FAF6F1] text-[#3F4A32]" data-theme={theme} onClickCapture={onClickCapture}>
+  <div className="betadesk-theme client-chat client-conversation min-h-screen bg-[#FAF6F1] text-[#3F4A32]" data-theme={theme} onClickCapture={onClickCapture}>
     <div className="border-b border-[#E5EADF] bg-white/80 px-4 py-3 sm:px-7">
       <div className="mx-auto flex max-w-5xl items-center justify-between gap-2 text-xs font-medium tracking-wide text-[#69745E]">
         <div className="flex items-center gap-2"><Ticket className="h-4 w-4 text-[#7C8B5F]" /> MERAKIFOS <span className="text-[#D9A441]">/</span> BETADESK</div>
         <BetaDeskThemeToggle theme={theme} onToggle={onToggleTheme} />
       </div>
     </div>
+    <ChatIdentity title="BetaDesk guide" subtitle="Report an issue, share an idea, or continue a conversation"/>
     {children}
   </div>
 );
@@ -403,10 +405,10 @@ export const TesterPortal: React.FC<{ testerToken: string }> = ({ testerToken })
         <header className="mb-6 flex flex-wrap items-center justify-between gap-3">
           <div>
             <div className="mb-2 inline-flex items-center gap-2 rounded-full bg-[#F2F3ED] px-3 py-1 text-xs text-[#69745E]">
-              <MessageSquare className="h-3.5 w-3.5" /> Private beta tester portal
+              <MessageSquare className="h-3.5 w-3.5" /> Beta feedback conversation
             </div>
             <h1 className="text-3xl">Welcome{tester.displayName ? `, ${tester.displayName}` : ''}</h1>
-            <p className="mt-1 text-sm text-[#76806B]">Submit feedback and check all updates to your tickets here.</p>
+            <p className="mt-1 text-sm text-[#76806B]">Tell us what happened. We’ll collect the details and keep the replies here.</p>
           </div>
           <button type="button" onClick={() => void loadPortal()} className="inline-flex items-center gap-2 rounded-lg border border-[#E5EADF] bg-white px-3 py-2 text-sm">
             <RefreshCw className="h-4 w-4" /> Refresh
@@ -417,21 +419,21 @@ export const TesterPortal: React.FC<{ testerToken: string }> = ({ testerToken })
 
         {!tester.displayName ? (
           <section className="max-w-xl rounded-2xl border border-[#E5EADF] bg-white p-6 shadow-sm sm:p-8">
-            <h2 className="text-2xl">Set up your tester profile</h2>
+            <h2 className="text-2xl">Before we start, what should I call you?</h2>
             <p className="mb-5 mt-2 text-sm leading-6 text-[#76806B]">Add your name once to personalize your feedback. It will be saved to this private link and used as the reporter on every ticket. No email or sign-in is required.</p>
-            <form onSubmit={claimName} className="space-y-3">
+            <ConversationalForm onSubmit={claimName} className="space-y-3">
               <label className="block text-xs font-medium">Your name
                 <input required autoFocus maxLength={100} value={displayName} onChange={(event) => setDisplayName(event.target.value)} className={`${inputClass} mt-1.5`} />
               </label>
               <button disabled={submitting || !displayName.trim()} className={buttonClass}>{submitting ? 'Saving…' : 'Save my name'}</button>
-            </form>
+            </ConversationalForm>
           </section>
         ) : (
           <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
             <section className="rounded-2xl border border-[#E5EADF] bg-white p-5 shadow-sm">
               <h2 className="mb-4 flex items-center gap-2 text-xl"><Ticket className="h-5 w-5 text-[#7C8B5F]" /> Submit feedback</h2>
               {projects.length === 0 && <p role="status" className="mb-4 rounded-lg bg-[#F2F3ED] p-3 text-xs text-[#69745E]">No beta projects are active. Please contact your beta administrator.</p>}
-              <form onSubmit={submitTicket} className="space-y-3.5">
+              <ConversationalForm key={tickets.length} onSubmit={submitTicket} className="space-y-3.5">
                 {tester.projectId ? (
                   <div className="rounded-lg bg-[#F2F3ED] px-3 py-2.5 text-xs">
                     <span className="text-[#76806B]">Project</span>
@@ -445,7 +447,7 @@ export const TesterPortal: React.FC<{ testerToken: string }> = ({ testerToken })
                   </label>
                 )}
                 <label className="block text-xs font-medium">Category
-                  <select value={form.category} onChange={updateForm('category')} className={`${inputClass} mt-1.5`}>
+                  <select aria-label="Category" value={form.category} onChange={updateForm('category')} className={`${inputClass} mt-1.5`}>
                     {categories.map((category) => <option key={category}>{category}</option>)}
                   </select>
                 </label>
@@ -485,7 +487,7 @@ export const TesterPortal: React.FC<{ testerToken: string }> = ({ testerToken })
                 </div>
                 <p className="text-xs text-[#8A9380]">Do not include passwords, payment information, or other sensitive details.</p>
                 <button disabled={submitting || uploading || !projects.length} className={buttonClass}><Send className="h-4 w-4" /> {uploading ? 'Uploading…' : submitting ? 'Submitting…' : 'Submit feedback'}</button>
-              </form>
+              </ConversationalForm>
             </section>
 
             <section className="rounded-2xl border border-[#E5EADF] bg-white shadow-sm">
@@ -556,7 +558,7 @@ export const TesterPortal: React.FC<{ testerToken: string }> = ({ testerToken })
                     <h3 className="mb-2 flex items-center gap-2 text-sm font-medium"><MessageSquare className="h-4 w-4 text-[#7C8B5F]" /> Replies</h3>
                     <div className="max-h-72 space-y-2 overflow-auto">
                       {comments.length === 0 ? <p className="text-xs text-[#8A9380]">No replies yet.</p> : comments.map((comment) => (
-                        <article key={comment.id} className="rounded-lg border border-[#E5EADF] p-3">
+                        <article key={comment.id} className={`chat-bubble ${comment.authorType === 'admin' ? 'assistant' : 'customer'}`}>
                           <div className="flex justify-between gap-2 text-[11px]">
                             <span className="font-medium">{comment.authorType === 'admin' ? 'Beta support' : 'You'}</span>
                             <time className="text-[#8A9380]">{dateLabel(comment.createdAt)}</time>

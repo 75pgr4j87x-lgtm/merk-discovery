@@ -72,8 +72,9 @@ try{
   const config=await request(a,bp(businessA.id)+'/guest-intake');assert.equal(config.enabled,true);
   const page=await browser.newPage();await page.goto(config.link);await page.getByRole('heading',{name:'Report an issue',exact:true}).waitFor();
   assert.equal(await page.getByRole('button',{name:'Sign in with Google'}).count(),0);
-  await page.getByLabel('Your name',{exact:true}).fill('Guest journey '+run);await page.getByLabel('Subject',{exact:true}).fill('Guest issue '+run);await page.getByLabel('Describe the issue',{exact:true}).fill('Please help with my invoice.');await page.getByRole('button',{name:'Submit issue',exact:true}).click();
-  await page.getByRole('heading',{name:'Your issue has been received'}).waitFor();const privateLink=await page.getByLabel('Private tracking link',{exact:true}).inputValue();const token=new URLSearchParams(new URL(privateLink).hash.slice(1)).get('token');assert.ok(token);
+  await page.screenshot({path:artifacts+'/guest-report-form.png',fullPage:true});
+  await page.getByLabel('Your name',{exact:true}).fill('Guest journey '+run);await page.getByRole('button',{name:'Send answer',exact:false}).click();await page.getByLabel('Subject',{exact:true}).fill('Guest issue '+run);await page.getByRole('button',{name:'Send answer',exact:false}).click();await page.getByLabel('Describe the issue',{exact:true}).fill('Please help with my invoice.');await page.getByRole('button',{name:'Send answer',exact:false}).click();await page.getByRole('button',{name:'Submit issue',exact:true}).click();
+  await page.getByRole('heading',{name:'Your issue has been received'}).waitFor();await page.screenshot({path:artifacts+'/guest-confirmation.png',fullPage:true});const privateLink=await page.getByLabel('Private tracking link',{exact:true}).inputValue();const token=new URLSearchParams(new URL(privateLink).hash.slice(1)).get('token');assert.ok(token);
   const visible=await request(null,api+'/public/conversations',{token});assert.equal(visible.messages[0].authorType,'customer');assert.equal(visible.messages[0].body,'Please help with my invoice.');
   const stored=(await db.collection('customerOperationsConversations').where('customerLinkTokenHash','==',(await import('node:crypto')).createHash('sha256').update(token).digest('hex')).get()).docs[0];
   await request(b,bp(businessB.id)+'/conversations/'+stored.id,{status:404});

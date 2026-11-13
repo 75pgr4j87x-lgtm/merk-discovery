@@ -1,3 +1,4 @@
+import {ChatIdentity,ChatBubble} from './chat/ClientChat';
 import CustomerOperationsFiles from './CustomerOperationsFiles';
 import type { CustomerOperationsAttachment } from '../types/customerOperations';
 import CustomerOperationsFeedback from './CustomerOperationsFeedback';
@@ -97,7 +98,7 @@ export const CustomerOperationsCustomerConversation: React.FC = () => {
   };
 
   return (
-    <main className="min-h-screen bg-slate-50 px-4 py-10 text-slate-900 sm:px-6">
+    <main className="client-chat client-conversation"><ChatIdentity title="Your support conversation" subtitle="Private messages between you and the support team"/><div className="chat-thread"><ChatBubble><p>You’re in the right place. Send a reply below or attach a file to help the team understand your issue.</p></ChatBubble>
       <div className="mx-auto max-w-3xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         <header className="border-b border-slate-200 p-6 sm:p-8">
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Customer conversation</p>
@@ -118,7 +119,7 @@ export const CustomerOperationsCustomerConversation: React.FC = () => {
           {notice && <p role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{notice}</p>}
           {isLoading ? <p className="text-center text-sm text-slate-500">Loading conversation…</p>
             : data?.messages.length ? data.messages.map((message) => (
-              <article key={message.id} className={`max-w-[90%] rounded-xl border p-4 ${message.authorType === 'customer' ? 'ml-auto border-blue-100 bg-blue-50' : 'border-slate-200 bg-slate-50'}`}>
+              <article key={message.id} className={`max-w-[90%] rounded-xl border p-4 ${message.authorType === 'customer' ? 'chat-bubble customer' : 'chat-bubble assistant'}`}>
                 <p className="text-xs font-medium text-slate-600">{message.authorType === 'customer' ? 'You' : 'Support team'}</p>
                 <p className="mt-2 whitespace-pre-wrap break-words text-sm text-slate-800">{message.body}</p><CustomerOperationsFiles files={message.attachments||[]} publicToken={token} onError={setError}/>
                 <time className="mt-2 block text-right text-[11px] text-slate-500">{new Date(message.createdAt).toLocaleString()}</time>
@@ -151,6 +152,6 @@ export const CustomerOperationsCustomerConversation: React.FC = () => {
         )}
       </div>
     {data && <CustomerOperationsFeedback token={token} />}
-      </main>
+      </div></main>
   );
 };
