@@ -1,3 +1,22 @@
+import {intakeRouter} from './customerOperationsIntake.js';
+import {CustomerOperationsAdminAccess,isStudioSuperAdmin} from './customerOperationsAdminAccess.js';
+import { operationsApplicationOrigin,previewConfiguration } from './customerOperationsDeployment.js';
+import { claimEmailDelivery,definitiveSmtpFailure } from './customerOperationsDelivery.js';
+import { metaSignature, resendSignature, receiveWhatsApp, receiveResendEmail, whatsAppConnections, sendWhatsApp, ChannelError } from './customerOperationsChannels.js';
+import { runOperationsJobs } from './customerOperationsJobs.js';
+import { secretMatches } from './customerOperationsSecurity.js';
+import { platformRouter, PlatformStore } from './customerOperationsPlatform.js';
+import { getStorage } from 'firebase-admin/storage';
+import { saveAttachment, loadAttachment, AttachmentError } from './customerOperationsAttachments.js';
+import { consumeOperationsRateLimit, validRequestId } from './customerOperationsSecurity.js';
+import { linkConversationTicket, assignConversation, MessagingError } from './customerOperationsMessaging.js';
+import { CustomerOperationsAccessStore, AccessError } from './customerOperationsAccess.js';
+import { getFirestore } from 'firebase-admin/firestore';
+import { getFirebaseApp } from './serverStore.js';
+import { operationsRouter, OperationsStore, conversationSurvey, customerKnowledge, OperationsError } from './customerOperationsOperations.js';
+import { customerVisibleMessages } from './customerOperationsPrivacy.js';
+import { reportingRouter, businessAccessStatus } from './customerOperationsReporting.js';
+import { loadCustomerOperationsReportTickets, loadCustomerOperationsReportFeedback } from './serverStore.js';
 import express from 'express';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
@@ -7,6 +26,8 @@ import {
   buildSubmissionsExcelWorkbook,
   buildSingleClientExcel,
   sendBetaDeskEmail,
+  sendCustomerOperationsConversationEmail,
+  isCustomerOperationsEmailConfigured,
   sendAdminInvitationEmail,
   sendBriefCopyEmail,
   DEFAULT_FOUNDER_EMAIL,
@@ -67,7 +88,56 @@ import {
   removeBetaDeskAdmin,
   verifyBetaDeskUploadGrant,
   updateBetaDeskTicket,
+  createCustomerOperationsBusiness,
+  addCustomerOperationsCustomerNote,
+  addCustomerOperationsTicketNote,
+  createCustomerOperationsCustomer,
+  createCustomerOperationsTicket,
+  deactivateCustomerOperationsBusinessMembership,
+  deactivateCustomerOperationsPlatformMembership,
+  loadCustomerOperationsBusiness,
+  loadCustomerOperationsBusinessMemberships,
+  loadCustomerOperationsBusinesses,
+  loadCustomerOperationsBusinessMembers,
+  loadCustomerOperationsCustomer,
+  loadCustomerOperationsTicket,
+  listCustomerOperationsCustomerActivity,
+  listCustomerOperationsCustomerNotes,
+  listCustomerOperationsCustomers,
+  listCustomerOperationsTicketEvents,
+  listCustomerOperationsTicketNotes,
+  listCustomerOperationsTickets,
+  loadCustomerOperationsPlatformMembership,
+  loadCustomerOperationsPlatformMemberships,
+  saveCustomerOperationsBusinessMembership,
+  saveCustomerOperationsPlatformMembership,
+  updateCustomerOperationsCustomer,
+  updateCustomerOperationsTicket,
+  addCustomerOperationsConversationMessage,
+  createCustomerOperationsConversation,
+  listCustomerOperationsConversations,
+  loadCustomerOperationsConversation,
+  loadCustomerOperationsConversationByTokenHash,
+  revokeCustomerOperationsConversationCustomerLink,
+  setCustomerOperationsConversationCustomerLink,
+  updateCustomerOperationsConversationStatus,
+  createCustomerOperationsCallLog,
+  listCustomerOperationsCallLogs,
+  loadCustomerOperationsConversationMessage,
+  updateCustomerOperationsConversationMessageDelivery,
 } from './serverStore.js';
+import type {
+  CustomerOperationsCallDirection,
+  CustomerOperationsCallOutcome,
+  CustomerOperationsCustomerStatus,
+  CustomerOperationsBusinessRole,
+  CustomerOperationsConversationStatus,
+  CustomerOperationsMessageChannel,
+  CustomerOperationsPlatformRole,
+  CustomerOperationsTicketPriority,
+  CustomerOperationsTicketSource,
+  CustomerOperationsTicketStatus,
+} from './src/types/customerOperations.js';
 import {
   sanitizeSubmissionPayload,
   sanitizeEmail,
@@ -88,9 +158,11 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     next();
   });
 
-  app.use(express.json({ limit: '5mb' }));
+  const webhookBodies=new WeakMap<express.Request,Buffer>();
+  app.use(express.json({ limit: '5mb',verify:(req,_res,body)=>{if(req.url?.startsWith('/api/customer-operations/webhooks/'))webhookBodies.set(req as express.Request,Buffer.from(body));} }));
 
   const verifyStudioIdentity = async (req: express.Request, res: express.Response) => {
+    const preview=previewConfiguration();if(preview.missing.length){res.status(503).json({error:'Development preview needs its separate Firebase configuration.',missing:preview.missing});return null;}
     if (!ownerEmail) {
       res.status(503).json({ error: 'Studio Super Admin is not configured on the server.' });
       return null;
@@ -102,19 +174,122 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
       return null;
     }
     try {
-      const decodedToken = await getStudioAuth().verifyIdToken(token);
+      const decodedToken = await getStudioAuth().verifyIdToken(token, true);
       const email = (decodedToken.email || '').trim().toLowerCase();
       if (!email || !decodedToken.email_verified) {
         res.status(403).json({ error: 'A verified Google email is required for Studio access.' });
         return null;
       }
-      const isOwner = Boolean(ownerEmail && email === ownerEmail);
+      const isOwner = await isStudioSuperAdmin(getFirestore(getFirebaseApp()),email,decodedToken.uid,ownerEmail);
       const invite = isOwner ? null : await loadStudioInvite(email);
       return { isOwner, role: isOwner ? 'super_admin' as const : invite?.role || null, email, uid: decodedToken.uid };
-    } catch {
+    } catch (error) {
+      if(error instanceof AccessError){res.status(error.status).json({error:error.message});return null;}
+      const code=String((error as {code?:unknown})?.code||'');
+      if(!['auth/id-token-expired','auth/id-token-revoked','auth/argument-error','auth/invalid-id-token','auth/user-disabled','auth/user-not-found'].includes(code)){
+        console.error('Studio access backend unavailable:',code||'configuration');
+        res.status(503).json({error:'Studio could not connect to Firebase. Check the server credentials and that the development Firestore database exists.'});return null;
+      }
       res.status(401).json({ error: 'Invalid or expired studio sign-in.' });
       return null;
     }
+  };
+
+  const verifyCustomerOperationsIdentity = async (req: express.Request, res: express.Response) => {
+    if (!ownerEmail) {
+      res.status(503).json({ error: 'Customer Operations platform administrator is not configured.' });
+      return null;
+    }
+    const token = (req.get('authorization') || '').match(/^Bearer\s+(.+)$/i)?.[1];
+    if (!token) {
+      res.status(401).json({ error: 'Sign-in is required.' });
+      return null;
+    }
+    let decodedToken: { email?: string; email_verified?: boolean; uid: string };
+    try {
+      decodedToken = await getStudioAuth().verifyIdToken(token, true);
+    } catch (error) {
+      console.error('Failed to verify Customer Operations identity token:', error);
+      res.status(401).json({ error: 'Invalid or expired sign-in.' });
+      return null;
+    }
+    const email = (decodedToken.email || '').trim().toLowerCase();
+    if (!email || !decodedToken.email_verified) {
+      res.status(403).json({ error: 'A verified email address is required.' });
+      return null;
+    }
+    try { if (!await consumeOperationsRateLimit(getFirestore(getFirebaseApp()), `identity:${decodedToken.uid}`, 180)) { res.setHeader('Retry-After','60');res.status(429).json({error:'Too many requests. Please retry in a minute.'});return null; } }
+    catch {res.status(503).json({error:'Access checks are temporarily unavailable.'});return null;}
+    const isPlatformSuperAdmin = email === ownerEmail;
+    try {
+      const accessStore = new CustomerOperationsAccessStore(getFirestore(getFirebaseApp()));
+      if (isPlatformSuperAdmin) await isStudioSuperAdmin(getFirestore(getFirebaseApp()),email,decodedToken.uid,ownerEmail);
+      const resolved = isPlatformSuperAdmin ? { platformMember: null, businesses: [] } : await accessStore.resolve(email, decodedToken.uid);
+      const platformRole = isPlatformSuperAdmin ? 'platform_super_admin' as const : resolved.platformMember?.role || null;
+      const businesses = isPlatformSuperAdmin ? await new CustomerOperationsAdminAccess(getFirestore(getFirebaseApp())).memberships(decodedToken.uid,email) : platformRole ? [] : resolved.businesses;
+      return {
+        email,
+        uid: decodedToken.uid,
+        isPlatformSuperAdmin,
+        platformRole,
+        businesses,
+      };
+    } catch (error) {
+      console.error('Failed to load Customer Operations memberships:', error);
+      res.status(error instanceof AccessError ? error.status : 503).json({ error: error instanceof AccessError ? error.message : 'Could not verify Customer Operations access. Please retry.' });
+      return null;
+    }
+  };
+
+  const requireCustomerOperationsSuperAdmin: express.RequestHandler = async (req, res, next) => {
+    const identity = await verifyCustomerOperationsIdentity(req, res);
+    if (!identity) return;
+    if (!identity.isPlatformSuperAdmin) {
+      res.status(403).json({ error: 'Only the Platform Super Admin can manage platform settings.' });
+      return;
+    }
+    res.locals.customerOperationsEmail = identity.email;
+    res.locals.customerOperationsUid=identity.uid;
+    next();
+  };
+
+  const requireCustomerOperationsBusinessManagement: express.RequestHandler = async (req, res, next) => {
+    const identity = await verifyCustomerOperationsIdentity(req, res);
+    if (!identity) return;
+    if (identity.isPlatformSuperAdmin) {
+      res.locals.customerOperationsEmail = identity.email;
+      next();
+      return;
+    }
+    const membership = identity.businesses.find((item) => item.businessId === req.params.businessId);
+    if (membership?.role !== 'business_owner') {
+      res.status(403).json({ error: 'Business owner access is required for this operation.' });
+      return;
+    }
+    res.locals.customerOperationsEmail = identity.email;
+    next();
+  };
+
+  const requireCustomerOperationsBusinessAccess: express.RequestHandler = async (req, res, next) => {
+    const identity = await verifyCustomerOperationsIdentity(req, res);
+    if (!identity) return;
+    if(identity.isPlatformSuperAdmin){
+      try{
+        await new CustomerOperationsAdminAccess(getFirestore(getFirebaseApp())).record(identity.uid,identity.email,req.params.businessId,req.method,req.originalUrl);
+        res.locals.customerOperationsEmail=identity.email;res.locals.customerOperationsBusinessRole='business_owner';res.locals.customerOperationsSuperAdmin=true;next();return;
+      }catch(e){res.status(e instanceof AccessError?e.status:503).json({error:e instanceof AccessError?e.message:'Administrative access could not be verified.'});return;}
+    }
+    const accessStatus = businessAccessStatus(identity, req.params.businessId || '');
+    if (accessStatus !== 200) {
+      res.status(accessStatus).json({ error: accessStatus === 403
+        ? 'Platform roles do not grant access to private business customer data.'
+        : 'Business workspace not found.' });
+      return;
+    }
+    const membership = identity.businesses.find(item => item.businessId === req.params.businessId)!;
+    res.locals.customerOperationsEmail = identity.email;
+    res.locals.customerOperationsBusinessRole = membership.role;
+    next();
   };
 
   const requireStudioAccess: express.RequestHandler = async (req, res, next) => {
@@ -231,7 +406,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
   const betaDeskAppBaseUrl = (req?: express.Request) => {
     const deploymentUrl = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null;
     const configuredUrl = process.env.VERCEL_ENV === 'preview'
-      ? deploymentUrl || process.env.PUBLIC_APP_URL
+      ? operationsApplicationOrigin(req?.get('host') || '')
       : process.env.PUBLIC_APP_URL || deploymentUrl;
     const requestHost = req?.get('host') || '';
     const localUrl = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(requestHost)
@@ -246,10 +421,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     return url;
   };
   const studioAccessUrl = (req: express.Request, path: string) => {
-    const branchUrl = process.env.VERCEL_ENV === 'preview' && process.env.VERCEL_BRANCH_URL
-      ? `https://${process.env.VERCEL_BRANCH_URL}`
-      : null;
-    return new URL(path, branchUrl || betaDeskAppBaseUrl(req)).toString();
+    return new URL(path, betaDeskAppBaseUrl(req)).toString();
   };
   const betaDeskPublicUrl = (req: express.Request, token: string) => {
     const url = betaDeskAppBaseUrl(req);
@@ -330,8 +502,9 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     const providerError = typeof req.query.error === 'string' ? req.query.error : '';
     const requestHost = req.get('host') || '';
     const localBase = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(requestHost) ? `http://${requestHost}` : null;
-    const appBase = process.env.PUBLIC_APP_URL
-      || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : localBase);
+    const appBase = process.env.VERCEL_ENV === 'preview'
+      ? operationsApplicationOrigin(requestHost)
+      : process.env.PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : localBase);
     if (!appBase) return res.status(503).send('BetaDesk callback URL is not configured.');
     const settingsUrl = new URL('/studio', appBase);
     if (providerError || !code || !state) {
@@ -900,6 +1073,1293 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
     return res.json({ allowed: identity.isOwner || Boolean(identity.role), isOwner: identity.isOwner, role: identity.role });
   });
 
+  app.get('/api/customer-operations/health',async (_req,res)=>{
+    const config=previewConfiguration();const missing=[...config.missing,...(!ownerEmail?['STUDIO_OWNER_EMAIL']:[])];
+    if(!missing.length){
+      try{getFirebaseApp();}catch(error){
+        const raw=(process.env.VERCEL_ENV==='preview'?process.env.FIREBASE_SERVICE_ACCOUN:undefined)||process.env.FIREBASE_SERVICE_ACCOUNT;
+        if(!raw)missing.push('FIREBASE_SERVICE_ACCOUNT is missing');
+        else{
+          try{
+            const account=JSON.parse(raw);
+            if(!account||typeof account!=='object'||!account.project_id||!account.client_email||!account.private_key)missing.push('FIREBASE_SERVICE_ACCOUNT must contain the complete service-account JSON file');
+            else if(account.project_id!==process.env.FIREBASE_PROJECT_ID)missing.push('FIREBASE_SERVICE_ACCOUNT belongs to a different Firebase project');
+            else missing.push('FIREBASE_SERVICE_ACCOUNT contains an unusable private key or credential');
+          }catch{missing.push('FIREBASE_SERVICE_ACCOUNT is not valid JSON');}
+        }
+      }
+    }
+    if(!missing.length){
+      try{await getFirestore(getFirebaseApp()).doc('_health/readiness').get();}catch{missing.push('Accessible Firestore database in the configured Firebase project');}
+    }
+    res.setHeader('Cache-Control','no-store');
+    return res.status(missing.length?503:200).json({status:missing.length?'configuration-required':'ok',environment:process.env.VERCEL_ENV||process.env.NODE_ENV||'development',missing});
+  });
+  app.use('/api/customer-operations', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    const config=previewConfiguration();if(config.missing.length)return res.status(503).json({error:'Development preview needs its separate Firebase configuration.',missing:config.missing});
+    next();
+  });
+
+  const requirePlatformSupport:express.RequestHandler=async(req,res,next)=>{const identity=await verifyCustomerOperationsIdentity(req,res);if(!identity)return;if(!identity.platformRole)return res.status(403).json({error:'Platform access required.'});res.locals.platformActor={email:identity.email,role:identity.platformRole};next();};
+  const requireBusinessPlatformSupport:express.RequestHandler=async(req,res,next)=>{await requireCustomerOperationsBusinessAccess(req,res,()=>{res.locals.platformActor={email:res.locals.customerOperationsEmail,role:res.locals.customerOperationsBusinessRole,businessId:req.params.businessId};next();});};
+  app.use('/api/customer-operations/platform',platformRouter({authorize:requirePlatformSupport,store:()=>new PlatformStore(getFirestore(getFirebaseApp()))}));
+  app.use('/api/customer-operations/businesses/:businessId/platform-support',platformRouter({authorize:requireBusinessPlatformSupport,store:()=>new PlatformStore(getFirestore(getFirebaseApp()))}));
+
+  app.use('/api/customer-operations/businesses/:businessId/operations', operationsRouter({ authorize: requireCustomerOperationsBusinessAccess, store: () => new OperationsStore(getFirestore(getFirebaseApp())) }));
+
+  app.use('/api/customer-operations/businesses/:businessId', reportingRouter({
+    authorize: requireCustomerOperationsBusinessAccess,
+    loadTickets: loadCustomerOperationsReportTickets,
+    loadFeedback: loadCustomerOperationsReportFeedback,
+  }));
+
+  app.use('/api/customer-operations/intake',intakeRouter(()=>getFirestore(getFirebaseApp())));
+  app.get('/api/customer-operations/businesses/:businessId/guest-intake',requireCustomerOperationsBusinessAccess,async(req,res)=>{
+    try{const b=await getFirestore(getFirebaseApp()).collection('customerOperationsBusinesses').doc(req.params.businessId).get();return res.json({enabled:b.get('guestIntakeEnabled')===true,canManage:['business_owner','business_manager'].includes(res.locals.customerOperationsBusinessRole),link:new URL('/customer-operations/report/'+encodeURIComponent(req.params.businessId),operationsApplicationOrigin(req.get('host')||'')).toString()});}catch{return res.status(503).json({error:'Reporting settings unavailable.'});}
+  });
+  app.put('/api/customer-operations/businesses/:businessId/guest-intake',requireCustomerOperationsBusinessAccess,async(req,res)=>{
+    if(!['business_owner','business_manager'].includes(res.locals.customerOperationsBusinessRole))return res.status(403).json({error:'Owner or manager access required.'});
+    if(typeof req.body?.enabled!=='boolean')return res.status(400).json({error:'Choose whether reporting is enabled.'});
+    try{const db=getFirestore(getFirebaseApp());await db.runTransaction(async tx=>{const ref=db.collection('customerOperationsBusinesses').doc(req.params.businessId),b=await tx.get(ref);if(!b.exists||b.get('status')!=='active')throw new Error('inactive');tx.update(ref,{guestIntakeEnabled:req.body.enabled});tx.create(db.collection('customerOperationsAuditLogs').doc(),{businessId:req.params.businessId,actorEmail:res.locals.customerOperationsEmail,action:'guest_intake_changed',enabled:req.body.enabled,createdAt:new Date().toISOString()});});return res.json({enabled:req.body.enabled});}catch{return res.status(503).json({error:'Reporting settings could not be saved.'});}
+  });
+
+  app.use('/api/customer-operations/public', async(req,res,next)=>{
+    if(!/^[A-Za-z0-9_-]{43}$/.test(req.get('x-customer-conversation-token')||''))return res.status(404).json({error:'Conversation link invalid or expired.'});
+    try{const db=getFirestore(getFirebaseApp());const token=req.get('x-customer-conversation-token')!;const allowed=await consumeOperationsRateLimit(db,`public-ip:${req.socket.remoteAddress}`,300)&&await consumeOperationsRateLimit(db,`public-token:${createHash('sha256').update(token).digest('hex')}`,req.method==='GET'?120:30);if(!allowed){res.setHeader('Retry-After','60');return res.status(429).json({error:'Too many requests. Please retry in a minute.'});}next();}catch{return res.status(503).json({error:'Support temporarily unavailable.'});}
+  });
+  app.get('/api/customer-operations/jobs',async(req,res)=>{
+    if(!secretMatches((req.get('authorization')||'').replace(/^Bearer /i,''),process.env.CRON_SECRET))return res.status(401).json({error:'Scheduler authorization required.'});
+    try{return res.json(await runOperationsJobs(getFirestore(getFirebaseApp())));}catch{return res.status(503).json({error:'Scheduler unavailable; retry later.'});}
+  });
+  app.get('/api/customer-operations/webhooks/whatsapp',(req,res)=>{
+    if(req.query['hub.mode']!=='subscribe'||!secretMatches(String(req.query['hub.verify_token']||''),process.env.META_VERIFY_TOKEN))return res.sendStatus(403);
+    const challenge=String(req.query['hub.challenge']||'');if(!/^\d{1,100}$/.test(challenge))return res.sendStatus(400);return res.type('text/plain').send(challenge);
+  });
+  app.post('/api/customer-operations/webhooks/whatsapp',async(req,res)=>{
+    const raw=webhookBodies.get(req);if(!raw||raw.length>1024*1024||!metaSignature(raw,req.get('x-hub-signature-256')||''))return res.status(401).json({error:'Invalid webhook signature.'});
+    if(req.body?.object!=='whatsapp_business_account'||!Array.isArray(req.body.entry)||req.body.entry.length>100)return res.status(400).json({error:'Invalid WhatsApp event.'});
+    try{for(const entry of req.body.entry){if(!Array.isArray(entry.changes)||entry.changes.length>100)throw new ChannelError(400,'Invalid event changes.');for(const change of entry.changes)if(change.field==='messages')await receiveWhatsApp(getFirestore(getFirebaseApp()),change.value);}return res.json({received:true});}
+    catch(e){return res.status(e instanceof ChannelError?e.status:503).json({error:e instanceof ChannelError?e.message:'Webhook processing failed; provider should retry.'});}
+  });
+  app.post('/api/customer-operations/webhooks/email',async(req,res)=>{
+    const raw=webhookBodies.get(req);if(!raw||raw.length>1024*1024||!resendSignature(raw,{id:req.get('svix-id')||'',timestamp:req.get('svix-timestamp')||'',signature:req.get('svix-signature')||''}))return res.status(401).json({error:'Invalid webhook signature.'});
+    try{return res.json(await receiveResendEmail(getFirestore(getFirebaseApp()),req.body,req.get('svix-id')!));}catch(e){return res.status(e instanceof ChannelError?e.status:503).json({error:e instanceof ChannelError?e.message:'Email webhook processing failed; provider should retry.'});}
+  });
+
+  const operationsInviteLink = (req: express.Request, token: string) => {
+    const url=new URL('/studio/customer-operations/invite',operationsApplicationOrigin(req.get('host')||''));
+    url.hash=new URLSearchParams({invite:token}).toString();return url.toString();
+  };
+  app.post('/api/customer-operations/invitations/claim', async (req, res) => {
+    const identity = await verifyCustomerOperationsIdentity(req, res); if (!identity) return;
+    if (identity.isPlatformSuperAdmin) return res.status(409).json({ error: 'The platform owner does not claim membership invitations.' });
+    try { return res.json(await new CustomerOperationsAccessStore(getFirestore(getFirebaseApp())).claim(req.body?.token || '', identity.email, identity.uid)); }
+    catch (e) { return res.status(e instanceof AccessError ? e.status : 503).json({ error: e instanceof AccessError ? e.message : 'Could not claim invitation.' }); }
+  });
+  app.delete('/api/customer-operations/invitations/:id', async (req,res) => {
+    const identity = await verifyCustomerOperationsIdentity(req,res);if(!identity)return;
+    try {await new CustomerOperationsAccessStore(getFirestore(getFirebaseApp())).revoke(req.params.id,identity.email,v=>identity.isPlatformSuperAdmin||(v.scope==='business'&&identity.businesses.some(m=>m.businessId===v.businessId&&m.role==='business_owner')));return res.json({success:true});}
+    catch(e){return res.status(e instanceof AccessError?e.status:503).json({error:e instanceof AccessError?e.message:'Could not revoke invitation.'});}
+  });
+  app.get('/api/customer-operations/invitations', async(req,res)=>{
+    const identity=await verifyCustomerOperationsIdentity(req,res);if(!identity)return;
+    try{const snapshots=await getFirestore(getFirebaseApp()).collection('customerOperationsInvitations').orderBy('createdAt','desc').limit(200).get();return res.json(snapshots.docs.map(d=>d.data()).filter(v=>identity.isPlatformSuperAdmin||identity.businesses.some(m=>m.businessId===v.businessId&&m.role==='business_owner')).map(({tokenHash,...safe})=>safe));}
+    catch{return res.status(503).json({error:'Invitations unavailable.'});}
+  });
+  app.post('/api/customer-operations/businesses/:businessId/invitations', requireCustomerOperationsBusinessManagement, async(req,res)=>{
+    const {email,isValid}=sanitizeEmail(req.body?.email);const role=req.body?.role;
+    if(!isValid||email===ownerEmail||!['business_manager','business_support_agent',...(res.locals.customerOperationsEmail===ownerEmail?['business_owner']:[])].includes(role))return res.status(400).json({error:'Invalid invitation email or role.'});
+    try{operationsInviteLink(req,'');const invitation=await new CustomerOperationsAccessStore(getFirestore(getFirebaseApp())).invite({scope:'business',businessId:req.params.businessId,email,role,actor:res.locals.customerOperationsEmail});return res.status(201).json({id:invitation.id,invitationLink:operationsInviteLink(req,invitation.token),expiresAt:invitation.expiresAt});}
+    catch(e){return res.status(e instanceof AccessError?e.status:503).json({error:e instanceof AccessError?e.message:'Invitation unavailable.'});}
+  });
+
+  app.post('/api/customer-operations/businesses/:businessId/admin-access',requireCustomerOperationsSuperAdmin,async(req,res)=>{
+    const identity={uid:res.locals.customerOperationsUid as string,email:res.locals.customerOperationsEmail as string};
+    try{return res.json(await new CustomerOperationsAdminAccess(getFirestore(getFirebaseApp())).open({uid:identity.uid,email:identity.email,businessId:req.params.businessId,purpose:typeof req.body?.purpose==='string'?req.body.purpose:''}));}
+    catch(e){return res.status(e instanceof AccessError?e.status:503).json({error:e instanceof AccessError?e.message:'Could not start administrative access.'});}
+  });
+  app.delete('/api/customer-operations/businesses/:businessId/admin-access',requireCustomerOperationsSuperAdmin,async(req,res)=>{
+    const identity={uid:res.locals.customerOperationsUid as string,email:res.locals.customerOperationsEmail as string};
+    try{await new CustomerOperationsAdminAccess(getFirestore(getFirebaseApp())).close(identity.uid,identity.email,req.params.businessId);return res.json({success:true});}
+    catch(e){return res.status(e instanceof AccessError?e.status:503).json({error:e instanceof AccessError?e.message:'Could not close administrative access.'});}
+  });
+
+  app.get('/api/customer-operations/access', async (req, res) => {
+    const identity = await verifyCustomerOperationsIdentity(req, res);
+    if (!identity) return;
+    return res.json({
+      allowed: identity.isPlatformSuperAdmin || Boolean(identity.platformRole) || identity.businesses.length > 0,
+      email: identity.email,
+      platformRole: identity.platformRole,
+      businesses: identity.businesses,
+    });
+  });
+
+  app.get('/api/customer-operations/businesses', requireCustomerOperationsSuperAdmin, async (_req, res) => {
+    try {
+      return res.json(await loadCustomerOperationsBusinesses());
+    } catch (error) {
+      console.error('Failed to load Customer Operations businesses:', error);
+      return res.status(500).json({ error: 'Could not load businesses.' });
+    }
+  });
+
+  app.post('/api/customer-operations/businesses', requireCustomerOperationsSuperAdmin, async (req, res) => {
+    const name = sanitizePlainText(req.body?.name, 150);
+    const { isValid, email: ownerEmailAddress } = sanitizeEmail(req.body?.ownerEmail);
+    if (!name || !isValid) {
+      return res.status(400).json({ error: 'A business name and valid owner email are required.' });
+    }
+    if (ownerEmailAddress === ownerEmail) {
+      return res.status(409).json({ error: 'The Platform Super Admin cannot also be assigned a business-owner membership.' });
+    }
+    try {
+      if (await loadCustomerOperationsPlatformMembership(ownerEmailAddress)) {
+        return res.status(409).json({ error: 'Platform Support Agents cannot be assigned as business owners.' });
+      }
+      operationsInviteLink(req, '');
+      const business = await createCustomerOperationsBusiness({
+        name,
+        ownerEmail: ownerEmailAddress,
+        createdBy: res.locals.customerOperationsEmail,
+      });
+      const invitation = await new CustomerOperationsAccessStore(getFirestore(getFirebaseApp())).invite({scope:'business',businessId:business.id,email:ownerEmailAddress,role:'business_owner',actor:res.locals.customerOperationsEmail});
+      return res.status(201).json({...business,invitationId:invitation.id,invitationLink:operationsInviteLink(req,invitation.token)});
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Platform members cannot be assigned as business owners.') {
+        return res.status(409).json({ error: error.message });
+      }
+      console.error('Failed to create Customer Operations business:', error);
+      return res.status(500).json({ error: 'Could not create the business.' });
+    }
+  });
+
+  app.get('/api/customer-operations/platform-members', requireCustomerOperationsSuperAdmin, async (_req, res) => {
+    try {
+      return res.json(await loadCustomerOperationsPlatformMemberships());
+    } catch (error) {
+      console.error('Failed to load Customer Operations platform members:', error);
+      return res.status(500).json({ error: 'Could not load platform members.' });
+    }
+  });
+
+  app.post('/api/customer-operations/platform-members', requireCustomerOperationsSuperAdmin, async (req, res) => {
+    const { isValid, email } = sanitizeEmail(req.body?.email);
+    const role = req.body?.role as CustomerOperationsPlatformRole;
+    if (!isValid || role !== 'platform_support_agent') {
+      return res.status(400).json({ error: 'Provide a valid email address and platform support agent role.' });
+    }
+    if (email === ownerEmail) {
+      return res.status(400).json({ error: 'The Platform Super Admin role is reserved for the configured owner.' });
+    }
+    try {
+      if ((await loadCustomerOperationsBusinessMemberships(email)).length) {
+        return res.status(409).json({ error: 'A business member cannot also be granted a platform support role.' });
+      }
+      operationsInviteLink(req, '');
+      const invitation=await new CustomerOperationsAccessStore(getFirestore(getFirebaseApp())).invite({scope:'platform',email,role,actor:res.locals.customerOperationsEmail});
+      return res.status(201).json({email,role,active:false,invitationId:invitation.id,invitationLink:operationsInviteLink(req,invitation.token)});
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Business members cannot be granted platform support access.') {
+        return res.status(409).json({ error: error.message });
+      }
+      console.error('Failed to grant Customer Operations platform access:', error);
+      return res.status(500).json({ error: 'Could not grant platform access.' });
+    }
+  });
+
+  app.delete(
+    '/api/customer-operations/platform-members/:email',
+    requireCustomerOperationsSuperAdmin,
+    async (req, res) => {
+      const { isValid, email } = sanitizeEmail(req.params.email);
+      if (!isValid) return res.status(400).json({ error: 'A valid email address is required.' });
+      if (email === ownerEmail) {
+        return res.status(400).json({ error: 'The Platform Super Admin cannot be deactivated here.' });
+      }
+      try {
+        const existing = await loadCustomerOperationsPlatformMembership(email);
+        if (!existing) return res.status(404).json({ error: 'Platform membership was not found.' });
+        await deactivateCustomerOperationsPlatformMembership(email, res.locals.customerOperationsEmail);
+        return res.json({ success: true });
+      } catch (error) {
+        if (error instanceof Error && error.message === 'Platform membership was not found.') {
+          return res.status(404).json({ error: error.message });
+        }
+        console.error('Failed to remove Customer Operations platform access:', error);
+        return res.status(500).json({ error: 'Could not remove platform access.' });
+      }
+    }
+  );
+
+  app.get(
+    '/api/customer-operations/businesses/:businessId/members',
+    requireCustomerOperationsBusinessAccess,
+    async (req, res) => {
+      try {
+        const business = await loadCustomerOperationsBusiness(req.params.businessId);
+        if (!business) return res.status(404).json({ error: 'Business was not found.' });
+        return res.json(await loadCustomerOperationsBusinessMembers(business.id));
+      } catch (error) {
+        console.error('Failed to load Customer Operations business members:', error);
+        return res.status(500).json({ error: 'Could not load business members.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/customer-operations/businesses/:businessId/members',
+    requireCustomerOperationsBusinessManagement,
+    async (req, res) => {
+      const { isValid, email } = sanitizeEmail(req.body?.email);
+      const role = req.body?.role as CustomerOperationsBusinessRole;
+      if (!isValid || !['business_manager', 'business_support_agent'].includes(role)) {
+        return res.status(400).json({ error: 'Provide a valid email and a permitted business role.' });
+      }
+      if (email === res.locals.customerOperationsEmail) {
+        return res.status(400).json({ error: 'You cannot change your own business owner membership.' });
+      }
+      try {
+        if (email === ownerEmail || await loadCustomerOperationsPlatformMembership(email)) {
+          return res.status(409).json({ error: 'Platform administrators and support agents cannot be granted business membership.' });
+        }
+        const member = await saveCustomerOperationsBusinessMembership({
+          businessId: req.params.businessId,
+          email,
+          role,
+          invitedBy: res.locals.customerOperationsEmail,
+        });
+        if (!member.uid || !member.active) {
+          const invitation=await new CustomerOperationsAccessStore(getFirestore(getFirebaseApp())).invite({scope:'business',businessId:req.params.businessId,email,role,actor:res.locals.customerOperationsEmail});
+          return res.status(201).json({...member,invitationId:invitation.id,invitationLink:operationsInviteLink(req,invitation.token)});
+        }
+        return res.status(201).json(member);
+      } catch (error) {
+        if (error instanceof Error && error.message === 'Platform members cannot be assigned business membership.') {
+          return res.status(409).json({ error: error.message });
+        }
+        if (error instanceof Error && error.message === 'An existing business owner cannot be downgraded.') {
+          return res.status(409).json({ error: error.message });
+        }
+        if (error instanceof Error && error.message === 'Business does not exist or is inactive.') {
+          return res.status(404).json({ error: 'Business was not found or is inactive.' });
+        }
+        console.error('Failed to grant Customer Operations business access:', error);
+        return res.status(500).json({ error: 'Could not grant business access.' });
+      }
+    }
+  );
+
+  app.delete(
+    '/api/customer-operations/businesses/:businessId/members/:email',
+    requireCustomerOperationsBusinessManagement,
+    async (req, res) => {
+      const { isValid, email } = sanitizeEmail(req.params.email);
+      if (!isValid) return res.status(400).json({ error: 'A valid email address is required.' });
+      if (email === res.locals.customerOperationsEmail) {
+        return res.status(400).json({ error: 'You cannot deactivate your own business membership.' });
+      }
+      try {
+        await deactivateCustomerOperationsBusinessMembership({
+          businessId: req.params.businessId,
+          email,
+          actorEmail: res.locals.customerOperationsEmail,
+        });
+        return res.json({ success: true });
+      } catch (error) {
+        if (error instanceof Error && error.message === 'Business membership was not found.') {
+          return res.status(404).json({ error: error.message });
+        }
+        if (error instanceof Error && error.message === 'Business owner membership cannot be deactivated here.') {
+          return res.status(409).json({ error: error.message });
+        }
+        console.error('Failed to remove Customer Operations business access:', error);
+        return res.status(500).json({ error: 'Could not remove business access.' });
+      }
+    }
+  );
+
+  const customerStatuses: CustomerOperationsCustomerStatus[] = ['active', 'inactive'];
+  const ticketStatuses: CustomerOperationsTicketStatus[] = [
+    'new', 'open', 'in_progress', 'waiting_on_customer', 'resolved', 'closed',
+  ];
+  const ticketPriorities: CustomerOperationsTicketPriority[] = ['low', 'normal', 'high', 'urgent'];
+  const conversationStatuses: CustomerOperationsConversationStatus[] = ['open', 'closed'];
+  const callDirections: CustomerOperationsCallDirection[] = ['inbound', 'outbound'];
+  const callOutcomes: CustomerOperationsCallOutcome[] = [
+    'answered', 'missed', 'voicemail', 'callback_requested', 'other',
+  ];
+  const ticketSources: CustomerOperationsTicketSource[] = ['manual'];
+  const allowedTicketTransitions: Record<CustomerOperationsTicketStatus, CustomerOperationsTicketStatus[]> = {
+    new: ['open', 'in_progress', 'waiting_on_customer', 'resolved', 'closed'],
+    open: ['new', 'in_progress', 'waiting_on_customer', 'resolved', 'closed'],
+    in_progress: ['open', 'waiting_on_customer', 'resolved', 'closed'],
+    waiting_on_customer: ['open', 'in_progress', 'resolved', 'closed'],
+    resolved: ['open', 'in_progress', 'closed'],
+    closed: ['open'],
+  };
+  const customerOperationsTags = (value: unknown): string[] | null => {
+    if (value === undefined) return [];
+    if (!Array.isArray(value) || value.length > 20) return null;
+    const tags = value.map((tag) => sanitizePlainText(tag, 40)).filter(Boolean);
+    if (tags.length !== value.length || new Set(tags.map((tag) => tag.toLocaleLowerCase())).size !== tags.length) {
+      return null;
+    }
+    return tags;
+  };
+  const customerOperationsCursor = (value: unknown, allowText=false): { updatedAt: string; id: string } | null | false => {
+    if (value === undefined || value === '') return null;
+    if (typeof value !== 'string' || value.length > 500) return false;
+    try {
+      const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as {
+        updatedAt?: unknown;
+        id?: unknown;
+      };
+      return typeof parsed.updatedAt === 'string'
+        && (allowText ? parsed.updatedAt.length<=180 : !Number.isNaN(Date.parse(parsed.updatedAt)))
+        && typeof parsed.id === 'string'
+        && /^[0-9a-f-]{36}$/i.test(parsed.id)
+        ? { updatedAt: parsed.updatedAt, id: parsed.id }
+        : false;
+    } catch {
+      return false;
+    }
+  };
+  const validBusinessAssignee = async (businessId: string, email: string) => {
+    if (!email) return true;
+    const members = await loadCustomerOperationsBusinessMembers(businessId);
+    return members.some((member) => member.email === email && member.active);
+  };
+  const createCustomerConversationAccessLink = async (
+    req: express.Request,
+    businessId: string,
+    conversationId: string
+  ) => {
+    const link = new URL('/customer-operations/conversations',operationsApplicationOrigin(req.get('host')||''));
+    const token = randomBytes(32).toString('base64url');
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const conversation = await setCustomerOperationsConversationCustomerLink({
+      businessId,
+      conversationId,
+      tokenHash: createHash('sha256').update(token).digest('hex'),
+      expiresAt,
+    });
+    if (!conversation) return null;
+    link.hash = new URLSearchParams({ token }).toString();
+    return { link: link.toString(), expiresAt };
+  };
+  const deliverCustomerOperationsEmailMessage = async (
+    req: express.Request,
+    businessId: string,
+    conversationId: string,
+    messageId: string,
+    retry=false
+  ) => {
+    const [conversationResult, message] = await Promise.all([
+      loadCustomerOperationsConversation(businessId, conversationId),
+      loadCustomerOperationsConversationMessage(businessId, conversationId, messageId),
+    ]);
+    if (!conversationResult) throw new Error('Conversation not found.');
+    const { conversation } = conversationResult;
+    if (!message || message.channel !== 'email' || message.visibility !== 'customer') {
+      throw new Error('Email message was not found.');
+    }
+    const delivery=await claimEmailDelivery(getFirestore(getFirebaseApp()),businessId,conversationId,messageId,retry);
+    if(!delivery.claimed)return message;
+    try {
+      const recipient = sanitizeEmail(conversation.customerEmail);
+      if (!recipient.isValid) throw new Error('Customer does not have a valid email address.');
+      const customerLink = await createCustomerConversationAccessLink(req, businessId, conversationId);
+      if (!customerLink) throw new Error('Conversation not found.');
+      const externalMessageId = await sendCustomerOperationsConversationEmail({
+        recipient: recipient.email,
+        subject: conversation.subject,
+        body: message.body,
+        conversationUrl: customerLink.link,
+      });
+      if(externalMessageId)await getFirestore(getFirebaseApp()).collection('customerOperationsExternalMappings').doc(createHash('sha256').update(`email:${externalMessageId}`).digest('hex')).set({provider:'email',externalId:externalMessageId,businessId,conversationId,messageId,createdAt:new Date().toISOString()});
+      const delivered = await updateCustomerOperationsConversationMessageDelivery({
+        businessId,
+        conversationId,
+        messageId,
+        status: 'sent',
+        externalMessageId,
+      });
+      if (!delivered) throw new Error('Email delivery status could not be recorded.');
+      await delivery.lease.update({state:'sent',completedAt:new Date().toISOString()});
+      return delivered;
+    } catch (error) {
+      await delivery.lease.update({state:definitiveSmtpFailure(error)?'failed':'uncertain',completedAt:new Date().toISOString()}).catch(()=>{});
+      await updateCustomerOperationsConversationMessageDelivery({
+        businessId,
+        conversationId,
+        messageId,
+        status: 'failed',
+        error: 'Email delivery failed. Check SMTP configuration and retry.',
+      });
+      throw error;
+    }
+  };
+
+  app.get(
+    '/api/customer-operations/businesses/:businessId/channels',
+    requireCustomerOperationsBusinessAccess,
+    (req, res) => {let whatsapp;try{whatsapp=whatsAppConnections().find(c=>c.businessId===req.params.businessId);}catch{return res.status(503).json({error:'Channel configuration is invalid.'});}return res.json({
+      email: { configured: isCustomerOperationsEmailConfigured(),inboundConfigured:Boolean(process.env.RESEND_API_KEY&&process.env.RESEND_WEBHOOK_SECRET) },
+      whatsapp: { configured: Boolean(whatsapp&&process.env.META_APP_SECRET), provider:whatsapp?'meta':null,templates:whatsapp?.templates||[] },
+      callLogging: { enabled: true },
+      attachments:{configured:Boolean(process.env.FIREBASE_STORAGE_BUCKET||process.env.FIRESTORE_EMULATOR_HOST)},
+    });}
+  );
+
+  app.get(
+    '/api/customer-operations/businesses/:businessId/calls',
+    requireCustomerOperationsBusinessAccess,
+    async (req, res) => {
+      const customerId = typeof req.query.customerId === 'string' ? req.query.customerId : undefined;
+      const limit = req.query.limit === undefined ? 50 : Number(req.query.limit);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100
+        || (customerId && !/^[0-9a-f-]{36}$/i.test(customerId))) {
+        return res.status(400).json({ error: 'Invalid call log filters.' });
+      }
+      try {
+        return res.json(await listCustomerOperationsCallLogs({
+          businessId: req.params.businessId,
+          limit,
+          ...(customerId ? { customerId } : {}),
+        }));
+      } catch (error) {
+        console.error('Failed to list Customer Operations call logs:', error);
+        return res.status(500).json({ error: 'Could not load call logs.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/customer-operations/businesses/:businessId/calls',
+    requireCustomerOperationsBusinessAccess,
+    async (req, res) => {
+      const customerId = sanitizePlainText(req.body?.customerId, 80);
+      const direction = req.body?.direction as CustomerOperationsCallDirection;
+      const outcome = req.body?.outcome as CustomerOperationsCallOutcome;
+      const phoneNumber = sanitizePlainText(req.body?.phoneNumber, 40);
+      const durationSeconds = Number(req.body?.durationSeconds ?? 0);
+      const summary = sanitizePlainText(req.body?.summary, 2000);
+      if (!/^[0-9a-f-]{36}$/i.test(customerId)
+        || !callDirections.includes(direction)
+        || !callOutcomes.includes(outcome)
+        || !Number.isInteger(durationSeconds) || durationSeconds < 0 || durationSeconds > 86400
+        || summary.length < 2) {
+        return res.status(400).json({ error: 'Enter valid call details and a summary.' });
+      }
+      try {
+        const call = await createCustomerOperationsCallLog({
+          businessId: req.params.businessId,
+          customerId,
+          direction,
+          outcome,
+          phoneNumber,
+          durationSeconds,
+          summary,
+          agentEmail: res.locals.customerOperationsEmail,
+        });
+        return call ? res.status(201).json(call) : res.status(404).json({ error: 'Customer not found.' });
+      } catch (error) {
+        if (error instanceof Error && error.message === 'Customer does not exist in this business.') {
+          return res.status(404).json({ error: 'Customer not found in this business.' });
+        }
+        if (error instanceof Error && error.message === 'Business does not exist or is inactive.') {
+          return res.status(404).json({ error: 'Business workspace not found.' });
+        }
+        console.error('Failed to create Customer Operations call log:', error);
+        return res.status(500).json({ error: 'Could not save the call log.' });
+      }
+    }
+  );
+
+  app.get(
+    '/api/customer-operations/businesses/:businessId/customers',
+    requireCustomerOperationsBusinessAccess,
+    async (req, res) => {
+      const limitValue = req.query.limit === undefined ? 50 : Number(req.query.limit);
+      const status = req.query.status as CustomerOperationsCustomerStatus | undefined;
+      const cursor = customerOperationsCursor(req.query.cursor);
+      if (!Number.isInteger(limitValue) || limitValue < 1 || limitValue > 100
+        || (status && !customerStatuses.includes(status)) || cursor === false) {
+        return res.status(400).json({ error: 'Invalid customer list filters or cursor.' });
+      }
+      try {
+        const result = await listCustomerOperationsCustomers({
+          businessId: req.params.businessId,
+          limit: limitValue,
+          ...(cursor ? { cursor } : {}),
+          ...(typeof req.query.search === 'string' ? { search: sanitizePlainText(req.query.search, 120) } : {}),
+          ...(status ? { status } : {}),
+        });
+        return res.json(result);
+      } catch (error) {
+        console.error('Failed to list Customer Operations customers:', error);
+        return res.status(500).json({ error: 'Could not load customers.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/customer-operations/businesses/:businessId/customers',
+    requireCustomerOperationsBusinessAccess,
+    async (req, res) => {
+      const name = sanitizePlainText(req.body?.name, 120);
+      const emailInput = req.body?.email ? sanitizeEmail(req.body.email) : { isValid: true, email: '' };
+      const phone = sanitizePlainText(req.body?.phone, 40);
+      const whatsapp = sanitizePlainText(req.body?.whatsapp, 40);
+      const company = sanitizePlainText(req.body?.company, 150);
+      const assignedOwner = req.body?.assignedOwner ? sanitizeEmail(req.body.assignedOwner) : { isValid: true, email: '' };
+      const tags = customerOperationsTags(req.body?.tags);
+      if (name.length < 2 || !emailInput.isValid || !assignedOwner.isValid || tags === null) {
+        return res.status(400).json({ error: 'Enter a customer name and valid contact, owner, and tag values.' });
+      }
+      try {
+        if (!await validBusinessAssignee(req.params.businessId, assignedOwner.email)) {
+          return res.status(400).json({ error: 'The assigned owner must be an active member of this business.' });
+        }
+        const customer = await createCustomerOperationsCustomer({
+          businessId: req.params.businessId,
+          name,
+          email: emailInput.email,
+          phone,
+          whatsapp,
+          company,
+          tags,
+          assignedOwner: assignedOwner.email,
+          actorEmail: res.locals.customerOperationsEmail,
+        });
+        return res.status(201).json(customer);
+      } catch (error) {
+        if (error instanceof Error && error.message === 'Business does not exist or is inactive.') {
+          return res.status(404).json({ error: 'Business workspace not found.' });
+        }
+        if (error instanceof Error && error.message === 'Assigned owner is not an active member of this business.') {
+          return res.status(409).json({ error: 'The assigned owner is no longer an active member. Refresh and retry.' });
+        }
+        console.error('Failed to create Customer Operations customer:', error);
+        return res.status(500).json({ error: 'Could not create the customer.' });
+      }
+    }
+  );
+
+  app.get(
+    '/api/customer-operations/businesses/:businessId/customers/:customerId',
+    requireCustomerOperationsBusinessAccess,
+    async (req, res) => {
+      if (!/^[0-9a-f-]{36}$/i.test(req.params.customerId)) {
+        return res.status(404).json({ error: 'Customer not found.' });
+      }
+      try {
+        const customer = await loadCustomerOperationsCustomer(req.params.businessId, req.params.customerId);
+        if (!customer) return res.status(404).json({ error: 'Customer not found.' });
+        const [notes, activity] = await Promise.all([
+          listCustomerOperationsCustomerNotes(req.params.businessId, customer.id),
+          listCustomerOperationsCustomerActivity(req.params.businessId, customer.id),
+        ]);
+        return res.json({ customer, internalNotes: notes, activity });
+      } catch (error) {
+        console.error('Failed to load Customer Operations customer:', error);
+        return res.status(500).json({ error: 'Could not load the customer.' });
+      }
+    }
+  );
+
+  app.patch(
+    '/api/customer-operations/businesses/:businessId/customers/:customerId',
+    requireCustomerOperationsBusinessAccess,
+    async (req, res) => {
+      if (!/^[0-9a-f-]{36}$/i.test(req.params.customerId)) {
+        return res.status(404).json({ error: 'Customer not found.' });
+      }
+      const changes: Record<string, unknown> = {};
+      if (req.body?.name !== undefined) changes.name = sanitizePlainText(req.body.name, 120);
+      if (req.body?.email !== undefined) {
+        const value = req.body.email ? sanitizeEmail(req.body.email) : { isValid: true, email: '' };
+        if (!value.isValid) return res.status(400).json({ error: 'Enter a valid email address.' });
+        changes.email = value.email;
+      }
+      for (const key of ['phone', 'whatsapp', 'company'] as const) {
+        if (req.body?.[key] !== undefined) {
+          changes[key] = sanitizePlainText(req.body[key], key === 'company' ? 150 : 40);
+        }
+      }
+      if (req.body?.status !== undefined) {
+        if (!customerStatuses.includes(req.body.status)) return res.status(400).json({ error: 'Invalid customer status.' });
+        changes.status = req.body.status;
+      }
+      if (req.body?.tags !== undefined) {
+        const tags = customerOperationsTags(req.body.tags);
+        if (tags === null) return res.status(400).json({ error: 'Tags must be unique and contain no more than 20 values.' });
+        changes.tags = tags;
+      }
+      if (req.body?.assignedOwner !== undefined) {
+        const assignee = req.body.assignedOwner ? sanitizeEmail(req.body.assignedOwner) : { isValid: true, email: '' };
+        if (!assignee.isValid) return res.status(400).json({ error: 'Enter a valid assigned owner email.' });
+        try {
+          if (!await validBusinessAssignee(req.params.businessId, assignee.email)) {
+            return res.status(400).json({ error: 'The assigned owner must be an active member of this business.' });
+          }
+        } catch (error) {
+          console.error('Failed to validate Customer Operations customer owner:', error);
+          return res.status(503).json({ error: 'Could not verify the assigned owner. Please retry.' });
+        }
+        changes.assignedOwner = assignee.email;
+      }
+      if (changes.name !== undefined && String(changes.name).length < 2) {
+        return res.status(400).json({ error: 'Customer name must contain at least 2 characters.' });
+      }
+      if (!Object.keys(changes).length) return res.status(400).json({ error: 'No valid customer changes were provided.' });
+      try {
+        const customer = await updateCustomerOperationsCustomer({
+          businessId: req.params.businessId,
+          customerId: req.params.customerId,
+          changes: changes as Parameters<typeof updateCustomerOperationsCustomer>[0]['changes'],
+          actorEmail: res.locals.customerOperationsEmail,
+        });
+        return customer ? res.json(customer) : res.status(404).json({ error: 'Customer not found.' });
+      } catch (error) {
+        if (error instanceof Error && error.message === 'Assigned owner is not an active member of this business.') {
+          return res.status(409).json({ error: 'The assigned owner is no longer an active member. Refresh and retry.' });
+        }
+        console.error('Failed to update Customer Operations customer:', error);
+        return res.status(500).json({ error: 'Could not update the customer.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/customer-operations/businesses/:businessId/customers/:customerId/internal-notes',
+    requireCustomerOperationsBusinessAccess,
+    async (req, res) => {
+      if (!/^[0-9a-f-]{36}$/i.test(req.params.customerId)) {
+        return res.status(404).json({ error: 'Customer not found.' });
+      }
+      const body = sanitizePlainText(req.body?.body, 3000);
+      if (body.length < 2) return res.status(400).json({ error: 'Internal note must contain at least 2 characters.' });
+      try {
+        const note = await addCustomerOperationsCustomerNote({
+          businessId: req.params.businessId,
+          customerId: req.params.customerId,
+          body,
+          authorEmail: res.locals.customerOperationsEmail,
+        });
+        return note ? res.status(201).json(note) : res.status(404).json({ error: 'Customer not found.' });
+      } catch (error) {
+        console.error('Failed to add Customer Operations customer note:', error);
+        return res.status(500).json({ error: 'Could not add the internal note.' });
+      }
+    }
+  );
+
+  app.get(
+    '/api/customer-operations/businesses/:businessId/tickets',
+    requireCustomerOperationsBusinessAccess,
+    async (req, res) => {
+      const limitValue = req.query.limit === undefined ? 50 : Number(req.query.limit);
+      const status = req.query.status as CustomerOperationsTicketStatus | undefined;
+      const priority = req.query.priority as CustomerOperationsTicketPriority | undefined;
+      const cursor = customerOperationsCursor(req.query.cursor);
+      const customerId = typeof req.query.customerId === 'string' ? req.query.customerId : undefined;
+      if (!Number.isInteger(limitValue) || limitValue < 1 || limitValue > 100
+        || (status && !ticketStatuses.includes(status))
+        || (priority && !ticketPriorities.includes(priority))
+        || (customerId && !/^[0-9a-f-]{36}$/i.test(customerId))
+        || cursor === false) {
+        return res.status(400).json({ error: 'Invalid ticket list filters or cursor.' });
+      }
+      try {
+        const result = await listCustomerOperationsTickets({
+          businessId: req.params.businessId,
+          limit: limitValue,
+          ...(cursor ? { cursor } : {}),
+          ...(typeof req.query.search === 'string' ? { search: sanitizePlainText(req.query.search, 120) } : {}),
+          ...(customerId ? { customerId } : {}),
+          ...(status ? { status } : {}),
+          ...(priority ? { priority } : {}),
+        });
+        return res.json(result);
+      } catch (error) {
+        console.error('Failed to list Customer Operations tickets:', error);
+        return res.status(500).json({ error: 'Could not load tickets.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/customer-operations/businesses/:businessId/tickets',
+    requireCustomerOperationsBusinessAccess,
+    async (req, res) => {
+      const customerId = sanitizePlainText(req.body?.customerId, 80);
+      const subject = sanitizePlainText(req.body?.subject, 180);
+      const description = sanitizePlainText(req.body?.description, 5000);
+      const category = sanitizePlainText(req.body?.category, 80);
+      const tags = customerOperationsTags(req.body?.tags);
+      const priority = req.body?.priority as CustomerOperationsTicketPriority;
+      const source = req.body?.source as CustomerOperationsTicketSource | undefined;
+      const assignee = req.body?.assignedAgent ? sanitizeEmail(req.body.assignedAgent) : { isValid: true, email: '' };
+      if (!/^[0-9a-f-]{36}$/i.test(customerId) || subject.length < 3 || description.length < 2
+        || !category || tags === null || !ticketPriorities.includes(priority)
+        || (source !== undefined && !ticketSources.includes(source)) || !assignee.isValid) {
+        return res.status(400).json({ error: 'Complete the ticket fields with valid values.' });
+      }
+      try {
+        if (!await validBusinessAssignee(req.params.businessId, assignee.email)) {
+          return res.status(400).json({ error: 'The assigned agent must be an active member of this business.' });
+        }
+        const ticket = await createCustomerOperationsTicket({
+          businessId: req.params.businessId,
+          customerId,
+          subject,
+          description,
+          category,
+          tags,
+          priority,
+          assignedAgent: assignee.email,
+          assignedTeam:typeof req.body?.assignedTeam==='string'&&/^[0-9a-f-]{36}$/.test(req.body.assignedTeam)?req.body.assignedTeam:'',
+          source: source || 'manual',
+          actorEmail: res.locals.customerOperationsEmail,
+        });
+        return res.status(201).json(ticket);
+      } catch (error) {
+        if (error instanceof Error && error.message === 'Customer does not exist in this business.') {
+          return res.status(404).json({ error: 'Customer not found in this business.' });
+        }
+        if (error instanceof Error && error.message === 'Business does not exist or is inactive.') {
+          return res.status(404).json({ error: 'Business workspace not found.' });
+        }
+        if (error instanceof Error && error.message === 'Assigned agent is not an active member of this business.') {
+          return res.status(409).json({ error: 'The assigned agent is no longer an active member. Refresh and retry.' });
+        }
+        console.error('Failed to create Customer Operations ticket:', error);
+        return res.status(500).json({ error: 'Could not create the ticket.' });
+      }
+    }
+  );
+
+  app.get(
+    '/api/customer-operations/businesses/:businessId/tickets/:ticketId',
+    requireCustomerOperationsBusinessAccess,
+    async (req, res) => {
+      if (!/^[0-9a-f-]{36}$/i.test(req.params.ticketId)) {
+        return res.status(404).json({ error: 'Ticket not found.' });
+      }
+      try {
+        const ticket = await loadCustomerOperationsTicket(req.params.businessId, req.params.ticketId);
+        if (!ticket) return res.status(404).json({ error: 'Ticket not found.' });
+        const [internalNotes, events] = await Promise.all([
+          listCustomerOperationsTicketNotes(req.params.businessId, ticket.id),
+          listCustomerOperationsTicketEvents(req.params.businessId, ticket.id),
+        ]);
+        return res.json({ ticket, internalNotes, events });
+      } catch (error) {
+        console.error('Failed to load Customer Operations ticket:', error);
+        return res.status(500).json({ error: 'Could not load the ticket.' });
+      }
+    }
+  );
+
+  app.patch(
+    '/api/customer-operations/businesses/:businessId/tickets/:ticketId',
+    requireCustomerOperationsBusinessAccess,
+    async (req, res) => {
+      if (!/^[0-9a-f-]{36}$/i.test(req.params.ticketId)) {
+        return res.status(404).json({ error: 'Ticket not found.' });
+      }
+      const changes: Record<string, unknown> = {};
+      if (req.body?.subject !== undefined) {
+        changes.subject = sanitizePlainText(req.body.subject, 180);
+        if (String(changes.subject).length < 3) return res.status(400).json({ error: 'Subject must contain at least 3 characters.' });
+      }
+      if (req.body?.category !== undefined) {
+        changes.category = sanitizePlainText(req.body.category, 80);
+        if (!changes.category) return res.status(400).json({ error: 'Category is required.' });
+      }
+      if (req.body?.tags !== undefined) {
+        const tags = customerOperationsTags(req.body.tags);
+        if (tags === null) return res.status(400).json({ error: 'Tags must be unique and contain no more than 20 values.' });
+        changes.tags = tags;
+      }
+      if (req.body?.priority !== undefined) {
+        if (!ticketPriorities.includes(req.body.priority)) return res.status(400).json({ error: 'Invalid ticket priority.' });
+        changes.priority = req.body.priority;
+      }
+      if (req.body?.status !== undefined) {
+        if (!ticketStatuses.includes(req.body.status)) return res.status(400).json({ error: 'Invalid ticket status.' });
+        const current = await loadCustomerOperationsTicket(req.params.businessId, req.params.ticketId);
+        if (!current) return res.status(404).json({ error: 'Ticket not found.' });
+        if (req.body.status !== current.status && !allowedTicketTransitions[current.status].includes(req.body.status)) {
+          return res.status(409).json({ error: `Cannot change a ${current.status.replaceAll('_', ' ')} ticket to ${req.body.status.replaceAll('_', ' ')}.` });
+        }
+        changes.status = req.body.status;
+      }
+      if (req.body?.assignedAgent !== undefined) {
+        const assignee = req.body.assignedAgent ? sanitizeEmail(req.body.assignedAgent) : { isValid: true, email: '' };
+        if (!assignee.isValid) return res.status(400).json({ error: 'Enter a valid assigned agent email.' });
+        try {
+          if (!await validBusinessAssignee(req.params.businessId, assignee.email)) {
+            return res.status(400).json({ error: 'The assigned agent must be an active member of this business.' });
+          }
+        } catch (error) {
+          console.error('Failed to validate Customer Operations ticket assignee:', error);
+          return res.status(503).json({ error: 'Could not verify the assigned agent. Please retry.' });
+        }
+        changes.assignedAgent = assignee.email;
+      }
+      if(req.body?.assignedTeam!==undefined){if(typeof req.body.assignedTeam!=='string'||(req.body.assignedTeam&&!/^[0-9a-f-]{36}$/.test(req.body.assignedTeam)))return res.status(400).json({error:'Invalid team ID.'});changes.assignedTeam=req.body.assignedTeam;}
+      if (!Object.keys(changes).length) return res.status(400).json({ error: 'No valid ticket changes were provided.' });
+      try {
+        const ticket = await updateCustomerOperationsTicket({
+          businessId: req.params.businessId,
+          ticketId: req.params.ticketId,
+          changes: changes as Parameters<typeof updateCustomerOperationsTicket>[0]['changes'],
+          actorEmail: res.locals.customerOperationsEmail,
+        });
+        return ticket ? res.json(ticket) : res.status(404).json({ error: 'Ticket not found.' });
+      } catch (error) {
+        if (error instanceof Error && error.message === 'Ticket status transition is not allowed.') {
+          return res.status(409).json({ error: 'Ticket status changed concurrently. Refresh and retry.' });
+        }
+        if (error instanceof Error && error.message === 'Assigned agent is not an active member of this business.') {
+          return res.status(409).json({ error: 'The assigned agent is no longer an active member. Refresh and retry.' });
+        }
+        console.error('Failed to update Customer Operations ticket:', error);
+        return res.status(500).json({ error: 'Could not update the ticket.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/customer-operations/businesses/:businessId/tickets/:ticketId/internal-notes',
+    requireCustomerOperationsBusinessAccess,
+    async (req, res) => {
+      if (!/^[0-9a-f-]{36}$/i.test(req.params.ticketId)) {
+        return res.status(404).json({ error: 'Ticket not found.' });
+      }
+      const body = sanitizePlainText(req.body?.body, 3000);
+      if (body.length < 2) return res.status(400).json({ error: 'Internal note must contain at least 2 characters.' });
+      try {
+        const note = await addCustomerOperationsTicketNote({
+          businessId: req.params.businessId,
+          ticketId: req.params.ticketId,
+          body,
+          authorEmail: res.locals.customerOperationsEmail,
+        });
+        return note ? res.status(201).json(note) : res.status(404).json({ error: 'Ticket not found.' });
+      } catch (error) {
+        console.error('Failed to add Customer Operations ticket note:', error);
+        return res.status(500).json({ error: 'Could not add the internal note.' });
+      }
+    }
+  );
+
+  app.get(
+    '/api/customer-operations/businesses/:businessId/conversations',
+    requireCustomerOperationsBusinessAccess,
+    async (req, res) => {
+      const limitValue = req.query.limit === undefined ? 50 : Number(req.query.limit);
+      const status = req.query.status as CustomerOperationsConversationStatus | undefined;
+      const cursor = customerOperationsCursor(req.query.cursor, typeof req.query.search==='string'&&Boolean(req.query.search.trim()));
+      if (!Number.isInteger(limitValue) || limitValue < 1 || limitValue > 100
+        || (status && !conversationStatuses.includes(status)) || cursor === false) {
+        return res.status(400).json({ error: 'Invalid conversation filters or cursor.' });
+      }
+      try {
+        return res.json(await listCustomerOperationsConversations({
+          businessId: req.params.businessId,
+          limit: limitValue,
+          ...(req.query.assignee==='mine'?{assignedAgent:res.locals.customerOperationsEmail}:req.query.assignee==='unassigned'?{assignedAgent:''}:{}),
+          ...(typeof req.query.search==='string'&&req.query.search.trim()?{search:sanitizePlainText(req.query.search,100)}:{}),
+          ...(cursor ? { cursor } : {}),
+          ...(status ? { status } : {}),
+        }));
+      } catch (error) {
+        console.error('Failed to list Customer Operations conversations:', error);
+        return res.status(500).json({ error: 'Could not load conversations.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/customer-operations/businesses/:businessId/conversations',
+    requireCustomerOperationsBusinessAccess,
+    async (req, res) => {
+      const requestId=req.get('Idempotency-Key');if(!validRequestId(requestId))return res.status(400).json({error:'A valid Idempotency-Key header is required.'});
+      const customerId = sanitizePlainText(req.body?.customerId, 80);
+      const ticketId = req.body?.ticketId === '' || req.body?.ticketId === null
+        || req.body?.ticketId === undefined
+        ? null
+        : sanitizePlainText(req.body.ticketId, 80);
+      const subject = sanitizePlainText(req.body?.subject, 180);
+      const body = sanitizePlainText(req.body?.body, 3000);
+      if (!/^[0-9a-f-]{36}$/i.test(customerId)
+        || (ticketId !== null && !/^[0-9a-f-]{36}$/i.test(ticketId))
+        || subject.length < 3 || body.length < 2) {
+        return res.status(400).json({ error: 'Complete the conversation fields with valid values.' });
+      }
+      try {
+        const conversation = await createCustomerOperationsConversation({
+          businessId: req.params.businessId,
+          customerId,
+          ticketId,
+          subject,
+          body,
+          actorEmail: res.locals.customerOperationsEmail,
+          requestId,
+        });
+        return conversation
+          ? res.status(201).json(conversation)
+          : res.status(404).json({ error: 'Customer not found in this business.' });
+      } catch (error) {
+        if (error instanceof Error && error.message === 'Customer does not exist in this business.') {
+          return res.status(404).json({ error: 'Customer not found in this business.' });
+        }
+        if (error instanceof Error && error.message === 'Ticket does not belong to this customer and business.') {
+          return res.status(400).json({ error: 'The selected ticket must belong to this customer and business.' });
+        }
+        if (error instanceof Error && error.message === 'A conversation already exists for this ticket.') {
+          return res.status(409).json({ error: error.message });
+        }
+        if (error instanceof Error && error.message === 'Business does not exist or is inactive.') {
+          return res.status(404).json({ error: 'Business workspace not found.' });
+        }
+        if(error instanceof MessagingError)return res.status(error.status).json({error:error.message});
+        console.error('Failed to create Customer Operations conversation:', error);
+        return res.status(500).json({ error: 'Could not create the conversation.' });
+      }
+    }
+  );
+
+  app.post('/api/customer-operations/businesses/:businessId/conversations/:conversationId/assignment',requireCustomerOperationsBusinessAccess,async(req,res)=>{
+    const email=req.body?.assignedAgent?sanitizeEmail(req.body.assignedAgent):{email:'',isValid:true};if(!email.isValid)return res.status(400).json({error:'Invalid assignee.'});
+    try{return res.json(await assignConversation(getFirestore(getFirebaseApp()),{businessId:req.params.businessId,conversationId:req.params.conversationId,agent:email.email,actor:res.locals.customerOperationsEmail,manager:['business_owner','business_manager'].includes(res.locals.customerOperationsBusinessRole)}));}catch(e){return res.status(e instanceof MessagingError?e.status:503).json({error:e instanceof MessagingError?e.message:'Assignment unavailable.'});}
+  });
+
+  for(const method of ['post','delete'] as const) app[method]('/api/customer-operations/businesses/:businessId/conversations/:conversationId/tickets/:ticketId',requireCustomerOperationsBusinessAccess,async(req,res)=>{
+    if(![req.params.conversationId,req.params.ticketId].every(id=>/^[0-9a-f-]{36}$/.test(id)))return res.status(404).json({error:'Conversation or ticket not found.'});
+    try{return res.json(await linkConversationTicket(getFirestore(getFirebaseApp()),{businessId:req.params.businessId,conversationId:req.params.conversationId,ticketId:req.params.ticketId,actor:res.locals.customerOperationsEmail,remove:method==='delete'}));}
+    catch(e){return res.status(e instanceof MessagingError?e.status:503).json({error:e instanceof MessagingError?e.message:'Could not update ticket links.'});}
+  });
+
+  app.get(
+    '/api/customer-operations/businesses/:businessId/conversations/:conversationId',
+    requireCustomerOperationsBusinessAccess,
+    async (req, res) => {
+      if (!/^[0-9a-f-]{36}$/i.test(req.params.conversationId)) {
+        return res.status(404).json({ error: 'Conversation not found.' });
+      }
+      try {
+        const result = await loadCustomerOperationsConversation(req.params.businessId, req.params.conversationId);
+        return result ? res.json(result) : res.status(404).json({ error: 'Conversation not found.' });
+      } catch (error) {
+        console.error('Failed to load Customer Operations conversation:', error);
+        return res.status(500).json({ error: 'Could not load the conversation.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/customer-operations/businesses/:businessId/conversations/:conversationId/messages',
+    requireCustomerOperationsBusinessAccess,
+    async (req, res) => {
+      if (!/^[0-9a-f-]{36}$/i.test(req.params.conversationId)) {
+        return res.status(404).json({ error: 'Conversation not found.' });
+      }
+      const requestId=req.get('Idempotency-Key');if(!validRequestId(requestId))return res.status(400).json({error:'A valid Idempotency-Key header is required.'});
+      if(!Number.isInteger(req.body?.expectedRevision)||req.body.expectedRevision<0)return res.status(400).json({error:'Refresh the conversation to obtain its current revision.'});
+      if(typeof req.body?.expectedUpdatedAt!=='string'||!Number.isFinite(Date.parse(req.body.expectedUpdatedAt)))return res.status(400).json({error:'Refresh the conversation before replying.'});
+      const body = sanitizePlainText(req.body?.body, 3000);
+      const visibility = req.body?.visibility;
+      const channel = (req.body?.channel || 'in_app') as CustomerOperationsMessageChannel;
+      if (body.length < 2 || (visibility !== 'customer' && visibility !== 'internal')
+        || !['in_app', 'email', 'whatsapp'].includes(channel)) {
+        return res.status(400).json({ error: 'A message, channel, and valid visibility are required.' });
+      }
+      if (visibility === 'internal' && channel !== 'in_app') {
+        return res.status(400).json({ error: 'Internal messages cannot be sent through external channels.' });
+      }
+      if(channel==='whatsapp'&&!whatsAppConnections().some(c=>c.businessId===req.params.businessId))return res.status(503).json({error:'Official WhatsApp is not configured for this business.'});
+      if (channel === 'email' && !isCustomerOperationsEmailConfigured()) {
+        return res.status(503).json({ error: 'Email delivery is not configured. Set the server SMTP settings and retry.' });
+      }
+      try {
+        const conversation = channel === 'email'
+          ? await loadCustomerOperationsConversation(req.params.businessId, req.params.conversationId)
+          : null;
+        if (channel === 'email' && !conversation) {
+          return res.status(404).json({ error: 'Conversation not found.' });
+        }
+        if (channel === 'email' && !sanitizeEmail(conversation?.conversation.customerEmail).isValid) {
+          return res.status(409).json({ error: 'This customer does not have a valid email address.' });
+        }
+        const message = await addCustomerOperationsConversationMessage({
+          businessId: req.params.businessId,
+          conversationId: req.params.conversationId,
+          body,
+          authorType: 'staff',
+          requestId,
+          attachmentIds:Array.isArray(req.body?.attachmentIds)?req.body.attachmentIds:[],
+          expectedRevision:req.body.expectedRevision,
+          expectedUpdatedAt:typeof req.body?.expectedUpdatedAt==='string'?req.body.expectedUpdatedAt:undefined,
+          authorEmail: res.locals.customerOperationsEmail,
+          visibility,
+          channel,
+          ...(['email','whatsapp'].includes(channel) ? { deliveryStatus: 'pending' as const } : {}),
+        });
+        if (!message) return res.status(404).json({ error: 'Conversation not found.' });
+        if(channel==='whatsapp'){
+          try{return res.status(201).json(await sendWhatsApp(getFirestore(getFirebaseApp()),req.params.businessId,req.params.conversationId,message.id,req.body?.template));}
+          catch(e){return res.status(e instanceof ChannelError?e.status:502).json({error:e instanceof ChannelError?e.message:'Official WhatsApp send failed; check delivery history.'});}
+        }
+        if (channel === 'email' && message.deliveryStatus !== 'sent') {
+          try {
+            const delivered = await deliverCustomerOperationsEmailMessage(
+              req,
+              req.params.businessId,
+              req.params.conversationId,
+              message.id
+            );
+            return res.status(201).json(delivered);
+          } catch (error) {
+            if(error instanceof MessagingError)return res.status(error.status).json({error:error.message});
+            console.error('Failed to deliver Customer Operations conversation email:', error);
+            const failedMessage = await loadCustomerOperationsConversationMessage(
+              req.params.businessId,
+              req.params.conversationId,
+              message.id
+            );
+            return res.status(502).json({
+              error: error instanceof Error && error.message === 'Customer Operations email delivery is not configured.'
+                ? error.message
+                : 'The message was saved, but email delivery failed. Check SMTP configuration and retry.',
+              message: failedMessage || message,
+            });
+          }
+        }
+        return res.status(201).json(message);
+      } catch (error) {
+        if (error instanceof Error && error.message === 'Conversation not found.') {
+          return res.status(404).json({ error: error.message });
+        }
+        if(error instanceof MessagingError)return res.status(error.status).json({error:error.message});
+        console.error('Failed to add Customer Operations message:', error);
+        return res.status(500).json({ error: 'Could not send the message.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/customer-operations/businesses/:businessId/conversations/:conversationId/messages/:messageId/retry',
+    requireCustomerOperationsBusinessAccess,
+    async (req, res) => {
+      const { conversationId, messageId } = req.params;
+      if (!/^[0-9a-f-]{36}$/i.test(conversationId) || !/^[0-9a-f-]{36}$/i.test(messageId)) {
+        return res.status(404).json({ error: 'Email message not found.' });
+      }
+      if (!isCustomerOperationsEmailConfigured()) {
+        return res.status(503).json({ error: 'Email delivery is not configured. Set the server SMTP settings and retry.' });
+      }
+      try {
+        const message = await loadCustomerOperationsConversationMessage(req.params.businessId, conversationId, messageId);
+        if (!message || message.channel !== 'email' || message.visibility !== 'customer') {
+          return res.status(404).json({ error: 'Email message not found.' });
+        }
+        if (message.deliveryStatus !== 'failed') {
+          return res.status(409).json({ error: 'Only failed email messages can be retried.' });
+        }
+        const delivered = await deliverCustomerOperationsEmailMessage(
+          req,
+          req.params.businessId,
+          conversationId,
+          messageId,
+          true
+        );
+        return res.json(delivered);
+      } catch (error) {
+        if(error instanceof MessagingError)return res.status(error.status).json({error:error.message});
+        console.error('Failed to retry Customer Operations conversation email:', error);
+        await updateCustomerOperationsConversationMessageDelivery({
+          businessId: req.params.businessId,
+          conversationId,
+          messageId,
+          status: 'failed',
+          error: 'Email delivery failed. Check SMTP configuration and retry.',
+        });
+        return res.status(502).json({ error: 'Email delivery failed. Check SMTP configuration and retry.' });
+      }
+    }
+  );
+
+  app.patch(
+    '/api/customer-operations/businesses/:businessId/conversations/:conversationId',
+    requireCustomerOperationsBusinessAccess,
+    async (req, res) => {
+      if (!/^[0-9a-f-]{36}$/i.test(req.params.conversationId)
+        || !conversationStatuses.includes(req.body?.status)) {
+        return res.status(400).json({ error: 'A valid conversation status is required.' });
+      }
+      try {
+        const conversation = await updateCustomerOperationsConversationStatus({
+          businessId: req.params.businessId,
+          conversationId: req.params.conversationId,
+          status: req.body.status,
+        });
+        return conversation ? res.json(conversation) : res.status(404).json({ error: 'Conversation not found.' });
+      } catch (error) {
+        console.error('Failed to update Customer Operations conversation:', error);
+        return res.status(500).json({ error: 'Could not update the conversation.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/customer-operations/businesses/:businessId/conversations/:conversationId/customer-link',
+    requireCustomerOperationsBusinessAccess,
+    async (req, res) => {
+      if (!/^[0-9a-f-]{36}$/i.test(req.params.conversationId)) {
+        return res.status(404).json({ error: 'Conversation not found.' });
+      }
+      try {
+        const result = await createCustomerConversationAccessLink(
+          req,
+          req.params.businessId,
+          req.params.conversationId
+        );
+        if (!result) return res.status(404).json({ error: 'Conversation not found.' });
+        res.setHeader('Cache-Control', 'no-store');
+        return res.json(result);
+      } catch (error) {
+        console.error('Failed to issue Customer Operations customer link:', error);
+        return res.status(500).json({ error: 'Could not create the customer conversation link.' });
+      }
+    }
+  );
+
+  app.delete(
+    '/api/customer-operations/businesses/:businessId/conversations/:conversationId/customer-link',
+    requireCustomerOperationsBusinessAccess,
+    async (req, res) => {
+      if (!/^[0-9a-f-]{36}$/i.test(req.params.conversationId)) {
+        return res.status(404).json({ error: 'Conversation not found.' });
+      }
+      try {
+        const revoked = await revokeCustomerOperationsConversationCustomerLink({
+          businessId: req.params.businessId,
+          conversationId: req.params.conversationId,
+        });
+        return revoked ? res.json({ success: true }) : res.status(404).json({ error: 'Conversation not found.' });
+      } catch (error) {
+        console.error('Failed to revoke Customer Operations customer link:', error);
+        return res.status(500).json({ error: 'Could not revoke the customer conversation link.' });
+      }
+    }
+  );
+
+  app.post('/api/customer-operations/businesses/:businessId/conversations/:conversationId/attachments',requireCustomerOperationsBusinessAccess,async(req,res)=>{
+    try{const context=await loadCustomerOperationsConversation(req.params.businessId,req.params.conversationId);if(!context)return res.status(404).json({error:'Conversation not found.'});if(!['internal','customer'].includes(req.body?.visibility))return res.status(400).json({error:'Choose attachment visibility.'});const attachment=await saveAttachment(getFirestore(getFirebaseApp()),getStorage(getFirebaseApp()).bucket(),{businessId:req.params.businessId,conversationId:req.params.conversationId,visibility:req.body.visibility,owner:res.locals.customerOperationsEmail,file:req.body.file});return res.status(201).json(attachment);}catch(e){return res.status(e instanceof AttachmentError?e.status:503).json({error:e instanceof AttachmentError?e.message:'Private file storage is unavailable. Configure FIREBASE_STORAGE_BUCKET and its server permissions.'});}
+  });
+  app.get('/api/customer-operations/businesses/:businessId/attachments/:id',requireCustomerOperationsBusinessAccess,async(req,res)=>{
+    try{const a=await loadAttachment(getFirestore(getFirebaseApp()),getStorage(getFirebaseApp()).bucket(),req.params.businessId,req.params.id);res.setHeader('Content-Type',a.mime);res.setHeader('Content-Disposition',`attachment; filename="${a.name}"`);return res.send(a.bytes);}catch(e){return res.status(e instanceof AttachmentError?e.status:503).json({error:e instanceof AttachmentError?e.message:'Attachment unavailable.'});}
+  });
+
+  const customerConversationToken = (req: express.Request) => {
+    const token = req.get('x-customer-conversation-token') || '';
+    return /^[A-Za-z0-9_-]{43}$/.test(token) ? token : '';
+  };
+
+  app.post('/api/customer-operations/public/attachments',async(req,res)=>{
+    const token=customerConversationToken(req);if(!token)return res.status(404).json({error:'Conversation link invalid.'});
+    try{const hash=createHash('sha256').update(token).digest('hex'),context=await loadCustomerOperationsConversationByTokenHash(hash);if(!context)return res.status(404).json({error:'Conversation link invalid.'});return res.status(201).json(await saveAttachment(getFirestore(getFirebaseApp()),getStorage(getFirebaseApp()).bucket(),{businessId:context.conversation.businessId,conversationId:context.conversation.id,visibility:'customer',owner:hash,file:req.body.file}));}catch(e){return res.status(e instanceof AttachmentError?e.status:503).json({error:e instanceof AttachmentError?e.message:'Private file storage unavailable.'});}
+  });
+  app.get('/api/customer-operations/public/attachments/:id',async(req,res)=>{
+    const token=customerConversationToken(req);if(!token)return res.status(404).json({error:'Conversation link invalid.'});
+    try{const context=await loadCustomerOperationsConversationByTokenHash(createHash('sha256').update(token).digest('hex'));if(!context)return res.status(404).json({error:'Conversation link invalid.'});const a=await loadAttachment(getFirestore(getFirebaseApp()),getStorage(getFirebaseApp()).bucket(),context.conversation.businessId,req.params.id,context.conversation.id,true);res.setHeader('Content-Type',a.mime);res.setHeader('Content-Disposition',`attachment; filename="${a.name}"`);return res.send(a.bytes);}catch(e){return res.status(e instanceof AttachmentError?e.status:503).json({error:e instanceof AttachmentError?e.message:'Attachment unavailable.'});}
+  });
+
+  for (const method of ['get', 'post'] as const) app[method]('/api/customer-operations/public/survey', async (req, res) => {
+    const token = customerConversationToken(req);
+    if (!token) return res.status(404).json({ error: 'Conversation link invalid or expired.' });
+    try {
+      const hash = createHash('sha256').update(token).digest('hex');
+      const context = await loadCustomerOperationsConversationByTokenHash(hash);
+      if (!context) return res.status(404).json({ error: 'Conversation link invalid or expired.' });
+      return res.json({ survey: await conversationSurvey(getFirestore(getFirebaseApp()), context.conversation, hash, method === 'post' ? req.body : undefined) });
+    } catch (error) { return res.status(error instanceof OperationsError ? error.status : 503).json({ error: error instanceof OperationsError ? error.message : 'Feedback unavailable. Please retry.' }); }
+  });
+  app.get('/api/customer-operations/public/knowledge', async (req, res) => {
+    const token = customerConversationToken(req);
+    if (!token) return res.status(404).json({ error: 'Conversation link invalid or expired.' });
+    try {
+      const context = await loadCustomerOperationsConversationByTokenHash(createHash('sha256').update(token).digest('hex'));
+      if (!context) return res.status(404).json({ error: 'Conversation link invalid or expired.' });
+      return res.json({ articles: await customerKnowledge(getFirestore(getFirebaseApp()), context.conversation.businessId) });
+    } catch { return res.status(503).json({ error: 'Knowledge base unavailable. Please retry.' }); }
+  });
+
+  app.get('/api/customer-operations/public/conversations', async (req, res) => {
+    const token = customerConversationToken(req);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    if (!token) return res.status(404).json({ error: 'This conversation link is invalid or expired.' });
+    try {
+      const result = await loadCustomerOperationsConversationByTokenHash(
+        createHash('sha256').update(token).digest('hex')
+      );
+      if (!result) return res.status(404).json({ error: 'This conversation link is invalid or expired.' });
+      return res.json({
+        conversation: {
+          id: result.conversation.id,
+          customerName: result.conversation.customerName,
+          ticketNumber: result.conversation.ticketNumber,
+          subject: result.conversation.subject,
+          status: result.conversation.status,
+        },
+        messages: customerVisibleMessages(result.messages),
+      });
+    } catch (error) {
+      console.error('Failed to load public Customer Operations conversation:', error);
+      return res.status(500).json({ error: 'Could not load this conversation.' });
+    }
+  });
+
+  app.post('/api/customer-operations/public/conversations/messages', async (req, res) => {
+    const requestId=req.get('Idempotency-Key');if(!validRequestId(requestId))return res.status(400).json({error:'A valid Idempotency-Key header is required.'});
+    const token = customerConversationToken(req);
+    const body = sanitizePlainText(req.body?.body, 3000);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    if (!token) return res.status(404).json({ error: 'This conversation link is invalid or expired.' });
+    if (body.length < 2) return res.status(400).json({ error: 'Message must contain at least 2 characters.' });
+    try {
+      const tokenHash = createHash('sha256').update(token).digest('hex');
+      const result = await loadCustomerOperationsConversationByTokenHash(tokenHash);
+      if (!result) return res.status(404).json({ error: 'This conversation link is invalid or expired.' });
+      const message = await addCustomerOperationsConversationMessage({
+        businessId: result.conversation.businessId,
+        conversationId: result.conversation.id,
+        body,
+        authorType: 'customer',
+        authorEmail: null,
+        visibility: 'customer',
+        channel: 'in_app',
+        tokenHash,
+        requestId,
+        attachmentIds:Array.isArray(req.body?.attachmentIds)?req.body.attachmentIds:[],
+      });
+      return message ? res.status(201).json(message) : res.status(404).json({ error: 'This conversation link is invalid or expired.' });
+    } catch (error) {
+      if(error instanceof MessagingError)return res.status(error.status).json({error:error.message});
+      console.error('Failed to add public Customer Operations message:', error);
+      return res.status(500).json({ error: 'Could not send your message.' });
+    }
+  });
+
   app.get('/api/studio/betadesk/admins', requireStudioOwnerAccess, async (_req, res) => {
     try {
       return res.json({
@@ -1091,7 +2551,7 @@ const ownerEmail = process.env.STUDIO_OWNER_EMAIL?.trim().toLowerCase() || null;
       const authorization = req.get('authorization') || '';
       const token = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
       if (!token) return res.status(401).json({ error: 'Studio sign-in required.' });
-      const decodedToken = await getStudioAuth().verifyIdToken(token);
+      const decodedToken = await getStudioAuth().verifyIdToken(token, true);
       const invitedBy = (decodedToken.email || '').toLowerCase();
       const roleName = role === 'admin'
         ? 'Studio Admin'

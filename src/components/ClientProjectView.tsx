@@ -1,3 +1,4 @@
+import {ConversationalForm,ChatIdentity,ChatBubble} from './chat/ClientChat';
 import React from 'react';
 import { Download, MessageCircle, MessageSquare, Send, Sparkles, Volume2, VolumeX } from 'lucide-react';
 import { ProjectJourneyProgress } from './ProjectJourneyProgress';
@@ -23,6 +24,7 @@ interface ClientProject {
 
 export const ClientProjectView: React.FC<{ token: string }> = ({ token }) => {
   const [project, setProject] = React.useState<ClientProject | null>(null);
+  const [showMilestones,setShowMilestones]=React.useState(false);
   const [author, setAuthor] = React.useState('');
   const [message, setMessage] = React.useState('');
   const [activeTaskId, setActiveTaskId] = React.useState<string | null>(null);
@@ -122,15 +124,15 @@ export const ClientProjectView: React.FC<{ token: string }> = ({ token }) => {
   if (!project) return <main className="merakifos-ui grid min-h-screen place-items-center bg-[#FAF6F1] px-5 text-center"><div className="rounded-2xl border border-[#E5EADF] bg-white p-8"><div className="mb-2 text-xs uppercase tracking-[0.16em] text-[#7C8B5F]">Merakifos Studio</div><h1 className="text-xl font-semibold">Project link unavailable</h1><p className="mt-2 text-sm text-[#3F4A32]">{error || 'This link may have expired or been replaced.'}</p></div></main>;
 
   return (
-    <main onClickCapture={handleButtonSound} className="merakifos-ui min-h-screen bg-[#FAF6F1] text-[#3F4A32]">
+    <main onClickCapture={handleButtonSound} className="merakifos-ui client-chat client-conversation"><ChatIdentity title="Your project conversation" subtitle="Project updates, decisions and messages in one place"/>
       <header className="border-b border-[#E5EADF] bg-white px-4 py-5 sm:px-10 sm:py-7">
         <div className="mx-auto flex max-w-6xl flex-wrap items-end justify-between gap-4">
           <div className="min-w-0"><div className="mb-2 text-[10px] uppercase tracking-[0.18em] text-[#7C8B5F]">Merakifos Studio · Client workspace</div><h1 className="break-words text-2xl font-semibold">{project.title}</h1><p className="mt-1 text-sm text-[#3F4A32]">{project.companyName}</p></div>
           <div className="ml-auto flex items-center gap-2"><div className="hidden items-center gap-1.5 text-xs text-[#3F4A32] sm:flex"><Sparkles size={15} className="text-[#D9A441]" /> Project progress</div><button data-sound-control onClick={() => setEffectsMuted(soundTrack.toggleUiEffectsMuted())} aria-pressed={!effectsMuted} aria-label={effectsMuted ? 'Turn interface sounds on' : 'Turn interface sounds off'} title={effectsMuted ? 'Turn interface sounds on' : 'Turn interface sounds off'} className="border border-[#E5EADF] bg-white p-2 text-[#7C8B5F] hover:bg-[#FAF6F1]">{effectsMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}</button></div>
         </div>
       </header>
-      <div className="mx-auto grid max-w-6xl gap-8 px-4 py-6 sm:px-10 sm:py-8 lg:grid-cols-[minmax(0,1fr)_320px]">
-        <section>
+      <div className="chat-thread"><ChatBubble><p>Welcome to your project space. What would you like to do today?</p></ChatBubble><div className="chat-options"><button type="button" onClick={()=>setShowMilestones(v=>!v)} aria-pressed={showMilestones}>Check project progress</button><button type="button" onClick={()=>document.getElementById('project-conversation')?.scrollIntoView({block:'start'})}>Message the studio</button><button type="button" disabled={downloadingInvoice} onClick={()=>void downloadInvoice()}>Get my invoice</button></div>
+        <section hidden={!showMilestones}>
           <div className="mb-4 flex items-end justify-between"><div><h2 className="text-base font-semibold">Workflow</h2><p className="mt-1 text-xs text-[#3F4A32]">Current milestones and target dates</p></div><button onClick={loadProject} className="border border-[#E5EADF] bg-white px-3 py-2 text-xs text-[#3F4A32] hover:bg-[#F1F2EC]">Refresh</button></div>
           <div className="mb-5">
             <ProjectJourneyProgress columns={project.columns} tasks={project.tasks} />
@@ -148,26 +150,26 @@ export const ClientProjectView: React.FC<{ token: string }> = ({ token }) => {
                 {task.dueDate && <div className="mt-3 border-t border-[#E5E9E3] pt-2 text-[10px] text-[#687268]">Target: {new Date(`${task.dueDate}T12:00:00`).toLocaleDateString()}</div>}
                 {activeTaskId === task.id && <section className="mt-3 border-t border-[#E5EADF] pt-3" aria-label={`Discussion for ${task.title}`}>
                   <div className="mb-2 max-h-36 space-y-2 overflow-y-auto">{task.comments.length ? task.comments.map((comment) => <article key={comment.id} className="rounded-xl bg-[#FAF6F1] p-2.5"><div className="mb-1 flex items-center justify-between gap-2"><strong className="text-xs">{comment.author}</strong><time className="text-[10px] text-[#7C8B5F]">{new Date(comment.createdAt).toLocaleDateString()}</time></div><p className="whitespace-pre-wrap break-words text-xs">{comment.message}</p></article>) : <p className="text-xs text-[#7C8B5F]">No comments yet.</p>}</div>
-                  <form onSubmit={(event) => sendComment(event, task.id)} className="space-y-2">
+                  <ConversationalForm key={task.comments.length} onSubmit={(event) => sendComment(event, task.id)} className="space-y-2">
                     <label className="block text-[11px] text-[#3F4A32]">Your name<input value={author} onChange={(event) => setAuthor(event.target.value)} maxLength={80} required className="mt-1 w-full rounded-xl border border-[#E5EADF] bg-white px-2.5 py-2 text-xs text-[#3F4A32]" /></label>
                     <label className="block text-[11px] text-[#3F4A32]">Task comment<textarea value={message} onChange={(event) => setMessage(event.target.value)} maxLength={1000} required rows={2} className="mt-1 w-full resize-y rounded-xl border border-[#E5EADF] bg-white px-2.5 py-2 text-xs text-[#3F4A32]" placeholder="Write a task update or question" /></label>
                     <button disabled={sending} className="inline-flex items-center gap-2 rounded-xl bg-[#3F4A32] px-3 py-2 text-xs text-[#FAF6F1] disabled:opacity-50"><Send size={13} className="text-[#D9A441]" />{sending ? 'Sending...' : 'Send'}</button>
-                  </form>
+                  </ConversationalForm>
                 </section>}
               </article>)}</div>
             </section>)}
           </div>
         </section>
-        <aside className="border-t border-[#E5EADF] pt-5 lg:border-l lg:border-t-0 lg:pl-6 lg:pt-0">
+        <aside id="project-conversation" className="chat-card">
           <button onClick={downloadInvoice} disabled={downloadingInvoice} className="mb-6 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#3F4A32] px-4 py-3 text-sm text-[#FAF6F1] disabled:opacity-60"><Download size={16} className="text-[#D9A441]" />{downloadingInvoice ? 'Preparing invoice...' : 'Download invoice PDF'}</button>
           <div className="mb-4 flex items-center gap-2"><MessageSquare size={16} /><h2 className="text-sm font-semibold">Project comments</h2></div>
-          <form onSubmit={sendComment} className="space-y-2 border-b border-[#E5EADF] pb-5">
+          <ConversationalForm key={project.comments.length} onSubmit={sendComment} className="space-y-2 border-b border-[#E5EADF] pb-5">
             <label className="block text-[11px] text-[#3F4A32]">Your name<input value={author} onChange={(event) => setAuthor(event.target.value)} maxLength={80} required className="mt-1 w-full border border-[#E5EADF] bg-white px-2.5 py-2 text-xs text-[#3F4A32]" /></label>
             <label className="block text-[11px] text-[#3F4A32]">Comment<textarea value={message} onChange={(event) => setMessage(event.target.value)} maxLength={1000} required rows={3} className="mt-1 w-full resize-y border border-[#E5EADF] bg-white px-2.5 py-2 text-xs text-[#3F4A32]" placeholder="Ask a question or share feedback" /></label>
             <button disabled={sending} className="inline-flex items-center gap-2 bg-[#3F4A32] px-4 py-2.5 text-xs text-[#FAF6F1] disabled:opacity-50"><Send size={15} className="text-[#D9A441]" />{sending ? 'Sending...' : 'Send comment'}</button>
-          </form>
+          </ConversationalForm>
           {error && <p role="alert" className="mt-3 text-xs text-red-700">{error}</p>}
-          <div className="space-y-3 pt-4">{project.comments.length ? [...project.comments].reverse().map((comment) => <article key={comment.id} className="border-b border-[#E1E5DF] pb-3"><div className="flex items-center justify-between gap-2"><strong className="text-xs">{comment.author}</strong><time className="text-[10px] text-[#7C867D]">{new Date(comment.createdAt).toLocaleDateString()}</time></div><p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-[#59645B]">{comment.message}</p></article>) : <p className="text-xs text-[#7C867D]">No comments yet.</p>}</div>
+          <div className="space-y-3 pt-4">{project.comments.length ? [...project.comments].reverse().map((comment) => <article key={comment.id} className="chat-bubble assistant"><div className="flex items-center justify-between gap-2"><strong className="text-xs">{comment.author}</strong><time className="text-[10px] text-[#7C867D]">{new Date(comment.createdAt).toLocaleDateString()}</time></div><p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-[#59645B]">{comment.message}</p></article>) : <p className="text-xs text-[#7C867D]">No comments yet.</p>}</div>
         </aside>
       </div>
       <footer className="border-t border-[#E5EADF] px-5 py-5 text-center text-[10px] uppercase tracking-[0.14em] text-[#7C8B5F]">Merakifos Studio</footer>

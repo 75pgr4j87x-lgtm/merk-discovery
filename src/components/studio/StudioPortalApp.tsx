@@ -1,3 +1,4 @@
+import { WorkspaceNavigation } from '../WorkspaceNavigation';
 import React from 'react';
 import { User } from 'firebase/auth';
 import { GoogleSignInButton } from '../GoogleSignInButton';
@@ -143,7 +144,11 @@ async function downloadStudioFile(path: string, filename: string) {
   URL.revokeObjectURL(objectUrl);
 }
 
-export const StudioPortalApp: React.FC = () => {
+const CustomerSupportWorkspace=React.lazy(()=>import('../CustomerOperationsApp').then(module=>({default:module.CustomerOperationsApp})));
+
+export const StudioPortalApp: React.FC<{initialView?:'studio'|'support'}> = ({initialView='studio'}) => {
+  const isSupportView=initialView==='support';
+  const [supportOnly,setSupportOnly]=React.useState(false);
   // Firebase confirms identity; the server assigns Super Admin or invite role.
   const [user, setUser] = React.useState<User | null>(null);
   const [isAuthenticated, setIsAuthenticated] = React.useState(false);
@@ -225,6 +230,11 @@ export const StudioPortalApp: React.FC = () => {
           try {
             const response = await studioFetch('/api/studio/access');
             const data = await response.json();
+            if ((!response.ok || !data.allowed)&&isSupportView) {
+              const supportResponse=await studioFetch('/api/customer-operations/access');
+              const support=await supportResponse.json();
+              if(supportResponse.ok&&support.allowed){setSupportOnly(true);setAuthError('');setUser(currentUser);setIsStudioOwner(false);setAccessRole(null);setIsAuthenticated(true);return;}
+            }
             if (!response.ok || !data.allowed) {
               setUser(null);
               setIsAuthenticated(false);
@@ -234,6 +244,7 @@ export const StudioPortalApp: React.FC = () => {
               await auth.signOut();
               return;
             }
+            setSupportOnly(false);
             setAuthError('');
             setUser(currentUser);
             setIsStudioOwner(Boolean(data.isOwner));
@@ -259,7 +270,7 @@ export const StudioPortalApp: React.FC = () => {
     return () => {
       if (typeof unsubscribe === 'function') unsubscribe();
     };
-  }, []);
+  }, [isSupportView]);
 
   // Fetch Submissions and Outbox
   const fetchData = async () => {
@@ -304,10 +315,10 @@ export const StudioPortalApp: React.FC = () => {
   };
 
   React.useEffect(() => {
-    if (isAuthenticated) {
+    if (isAuthenticated&&!supportOnly) {
       fetchData();
     }
-  }, [isAuthenticated, isStudioOwner]);
+  }, [isAuthenticated, isStudioOwner,supportOnly]);
 
   const handleInviteUser = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -578,7 +589,7 @@ export const StudioPortalApp: React.FC = () => {
           </div>
 
           <h1 className="text-2xl font-heading font-normal text-[#3F4A32] mb-2">
-            Studio Operating Portal
+            {isSupportView?'Studio Customer Support':'Studio Operating Portal'}
           </h1>
           <p className="text-xs text-[#7C8B5F] font-body font-light mb-8 max-w-xs mx-auto">
             Sign in with an invited, verified Google account to review client projects and Studio work.
@@ -587,7 +598,7 @@ export const StudioPortalApp: React.FC = () => {
           {authError && <p role="alert" className="mb-5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">{authError}</p>}
 
           <div className="flex justify-center">
-            <GoogleSignInButton user={user} onAuthChange={setUser} />
+            <GoogleSignInButton identityOnly={isSupportView||supportOnly} user={user} onAuthChange={setUser} />
           </div>
 
           <div className="mt-8 pt-4 border-t border-stone-100 flex items-center justify-between text-[10px] text-[#7C8B5F]/70 font-body font-light">
@@ -623,16 +634,12 @@ export const StudioPortalApp: React.FC = () => {
               </span>
             </div>
             <span className="hidden sm:inline-block px-2.5 py-0.5 rounded-full text-[10px] bg-white border border-[#E5EADF] text-[#7C8B5F] font-body font-light">
-              {isStudioOwner ? 'Super Admin' : roleLabel[accessRole === 'super_admin' ? 'admin' : (accessRole || 'viewer')]}
+              {isStudioOwner ? 'Super Admin' : supportOnly?'Customer Support':roleLabel[accessRole === 'super_admin' ? 'admin' : (accessRole || 'viewer')]}
             </span>
           </div>
 
           <div className="flex max-w-full flex-wrap items-center justify-end gap-2.5">
-            {(isStudioOwner || accessRole === 'admin') && (
-              <a href="/studio/beta-feedback" className="inline-flex items-center gap-2 rounded-full border border-[#E5EADF] bg-white px-3 py-1.5 text-xs text-[#3F4A32] hover:border-[#7C8B5F]">
-                <Ticket className="h-3.5 w-3.5 text-[#7C8B5F]" /><span>BetaDesk</span>
-              </a>
-            )}
+            <WorkspaceNavigation active={isSupportView?'support':'studio'} supportOnly={supportOnly} showBetaDesk={isStudioOwner || accessRole === 'admin'} />
             {isStudioOwner && <button onClick={() => setIsInviteManagerOpen(true)} aria-label="Studio access" title="Studio access" className="inline-flex items-center gap-2 rounded-full border border-[#E5EADF] bg-white px-3 py-1.5 text-xs text-[#3F4A32] hover:border-[#7C8B5F]">
               <Key className="h-3.5 w-3.5 text-[#7C8B5F]" /><span className="hidden sm:inline">Studio access</span>
             </button>}
@@ -643,14 +650,14 @@ export const StudioPortalApp: React.FC = () => {
               {studioTheme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </button>
             {/* Outbox Badge */}
-            <button
+            {!supportOnly&&<button
               onClick={() => setIsOutboxOpen(true)}
               className="px-3 py-1.5 rounded-full bg-white hover:bg-[#FAF6F1] border border-[#E5EADF] hover:border-[#7C8B5F] text-xs font-body font-light text-[#3F4A32] flex items-center gap-1.5 transition cursor-pointer shadow-2xs"
             >
               <Inbox className="w-3.5 h-3.5 text-[#7C8B5F]" />
               <span className="hidden md:inline">Dispatched Briefs:</span>
               <span className="font-medium text-[#3F4A32]">{outbox.length}</span>
-            </button>
+            </button>}
 
             {/* Direct Link to Client Experience */}
             <a
@@ -665,7 +672,7 @@ export const StudioPortalApp: React.FC = () => {
             </a>
 
             {/* Google Drive / Auth Button */}
-            <GoogleSignInButton user={user} onAuthChange={setUser} />
+            <GoogleSignInButton identityOnly={isSupportView||supportOnly} user={user} onAuthChange={setUser} />
 
             {/* Sign Out */}
             <button
@@ -679,6 +686,7 @@ export const StudioPortalApp: React.FC = () => {
         </div>
       </header>
 
+      {isSupportView ? <main className="mx-auto w-full max-w-[1440px] flex-1 p-4 sm:p-6"><React.Suspense fallback={<p role="status">Loading Customer Support…</p>}><CustomerSupportWorkspace embedded sessionUser={user}/></React.Suspense></main> : <>
       {/* Main Studio Viewport */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-8 py-8 space-y-8">
         {/* Banner Alert if email was just dispatched */}
@@ -1021,6 +1029,7 @@ export const StudioPortalApp: React.FC = () => {
           )}
         </section>
       </main>
+      </>}
 
       {/* ----------------------------------------------------------- */}
       {/* MODAL: Full Project Brief Viewer & Copying */}

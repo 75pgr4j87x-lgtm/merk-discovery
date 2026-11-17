@@ -1,0 +1,11 @@
+# Client conversation experience
+
+The public Discovery route now uses a conversational intake: one prompt at a time, a persistent on-page transcript, quick replies, optional skips, palette selection, editable previous answers, keyboard submission and mobile layout. It preserves DiscoveryAnswers and the existing brief generation/submission services. A generated draft can be edited, saved, approved and downloaded as PDF. Approval is shown only after a successful server response; failed saves preserve text and offer retry. Client data is not added to browser persistence.
+
+Client-facing guest support intake, satisfaction surveys and BetaDesk name/issue collection use the shared progressive conversation form. Existing form validation, attachment controls, private-link authentication and submission handlers remain in place. Support and BetaDesk replies use chat bubbles; actual team messages remain distinct from guide prompts. Project sharing opens with conversation actions for progress, messaging and invoices, preserving task discussions and downloads. Studio administrative screens retain their existing layout.
+
+The guide prompts are deterministic. Discovery uses the existing AI-assisted brief service (including its existing fallback). This change does not connect a general-purpose AI agent to private support records or pretend that automated guide text came from a human.
+
+Validation: type check, production build and 35 application tests passed. Twenty actual Firebase-emulator end-to-end scenarios passed, including guest chat intake, private replies, attachments, feedback, reporting and access controls. `tests/clientChat.browser.mjs` verifies Discovery field mappings, optional skips, brief editing, failed approval/retry, saved submission identity, mobile overflow, BetaDesk name-only feedback and failure handling, and project progress/comments using explicit API fixtures. Those fixtures do not establish live AI provider, Google OAuth, external delivery or customer-session acceptance.
+
+Run browser checks after building with `PLAYWRIGHT_MODULE` pointing to an installed Playwright module and optional `CHROMIUM_PATH`. Screenshots default to `/tmp/merk-client-chat`; override with `CLIENT_CHAT_ARTIFACT_DIR`.

@@ -1,5 +1,7 @@
+import CustomerOperationsGuestIntake from './components/CustomerOperationsGuestIntake';
+import CustomerOperationsInvite from './components/CustomerOperationsInvite';
 import React from 'react';
-import { MerakifosDiscovery } from './components/MerakifosDiscovery';
+import { DiscoveryChat } from './components/chat/DiscoveryChat';
 import { StudioPortalApp } from './components/studio/StudioPortalApp';
 import { CookieConsent } from './components/compliance/CookieConsent';
 import { INITIAL_ANSWERS } from './data/discoveryQuestions';
@@ -9,6 +11,7 @@ import { ClientProjectView } from './components/ClientProjectView';
 import { BetaDeskAdmin } from './components/beta-desk/BetaDesk';
 import { TesterLinkRequired, TesterPortal } from './components/beta-desk/TesterPortal';
 import { StudioInviteClaim } from './components/studio/StudioInviteClaim';
+import { CustomerOperationsCustomerConversation } from './components/CustomerOperationsCustomerConversation';
 
 export default function App() {
   const [answers, setAnswers] = React.useState<DiscoveryAnswers>(INITIAL_ANSWERS);
@@ -64,6 +67,18 @@ export default function App() {
     );
   }
 
+  if (pathname.startsWith('/customer-operations/report/')) return <CustomerOperationsGuestIntake businessId={pathname.slice('/customer-operations/report/'.length)} />;
+
+  if (pathname === '/customer-operations/conversations') {
+    return <CustomerOperationsCustomerConversation />;
+  }
+
+  if(pathname === '/studio/customer-operations/invite') return <CustomerOperationsInvite />;
+
+  if (pathname === '/studio/customer-operations' || pathname.startsWith('/studio/customer-operations/')) {
+    return <StudioPortalApp initialView="support" />;
+  }
+
   if (pathname === '/feedback/submit') {
     return <TesterLinkRequired />;
   }
@@ -90,7 +105,7 @@ export default function App() {
   // 2. RENDER: Client-Facing Discovery (Pristine, zero studio portal UI or login buttons for clients)
   return (
     <div className="min-h-screen bg-[#FAF6F1] text-[#3F4A32] flex flex-col justify-between font-sans relative selection:bg-[#7C8B5F]/20 selection:text-[#3F4A32]">
-      <MerakifosDiscovery
+      <DiscoveryChat
         answers={answers}
         onChange={setAnswers}
         onCompleteAndSynthesize={handleCompleteAndSynthesize}

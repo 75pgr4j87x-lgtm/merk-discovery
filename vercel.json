@@ -1,10 +1,14 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "vite",
-  "installCommand": "bun install",
-  "buildCommand": "bun run build",
+  "installCommand": "npx --yes bun@1.4.4 install --frozen-lockfile",
+  "buildCommand": "npx --yes bun@1.4.4 run build",
   "outputDirectory": "public",
   "rewrites": [
+    {
+      "source": "/api/customer-operations/:path*",
+      "destination": "/api/customer-operations/route?__customer_operations_path=:path*"
+    },
     {
       "source": "/api/betadesk/:path*",
       "destination": "/api/betadesk/route?__betadesk_path=:path*"
@@ -23,6 +27,10 @@
     },
     {
       "source": "/studio/:path*",
+      "destination": "/"
+    },
+    {
+      "source": "/customer-operations/:path*",
       "destination": "/"
     },
     {

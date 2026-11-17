@@ -99,6 +99,45 @@ export async function sendBetaDeskEmail(options: {
   return 'sent';
 }
 
+export function isCustomerOperationsEmailConfigured(): boolean {
+  return Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+}
+
+export async function sendCustomerOperationsConversationEmail(options: {
+  recipient: string;
+  subject: string;
+  body: string;
+  conversationUrl: string;
+}): Promise<string | null> {
+  const { recipient, subject, body, conversationUrl } = options;
+  const smtpHost = process.env.SMTP_HOST;
+  const smtpUser = process.env.SMTP_USER;
+  const smtpPass = process.env.SMTP_PASS;
+  if (!smtpHost || !smtpUser || !smtpPass) {
+    throw new Error('Customer Operations email delivery is not configured.');
+  }
+  const transporter = nodemailer.createTransport({
+    host: smtpHost,
+    port: Number(process.env.SMTP_PORT) || 587,
+    secure: process.env.SMTP_SECURE === 'true',
+    auth: { user: smtpUser, pass: smtpPass },
+  });
+  const info = await transporter.sendMail({
+    from: `"Customer Support" <${process.env.SMTP_FROM || smtpUser}>`,
+    to: recipient,
+    subject,
+    text: [
+      body,
+      '',
+      'View this conversation and send a secure reply:',
+      conversationUrl,
+      '',
+      'This private link expires in seven days.',
+    ].join('\n'),
+  });
+  return info.messageId || null;
+}
+
 export async function sendAdminInvitationEmail(options: {
   recipient: string;
   role: 'Studio Admin' | 'Studio Project Manager' | 'Studio Viewer' | 'BetaDesk Admin';

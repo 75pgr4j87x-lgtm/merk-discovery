@@ -1,0 +1,40 @@
+name: Integrate feature branches into dev
+on:
+  push:
+    branches: [betadesk, customer-operations]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: integrate-dev
+  cancel-in-progress: false
+jobs:
+  integrate:
+    if: github.ref_name == 'betadesk' || github.ref_name == 'customer-operations'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Merge into current dev
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin dev
+          git checkout -B integration origin/dev
+          git merge --no-ff --no-edit "$GITHUB_SHA"
+      - name: Install dependencies
+        run: npx --yes bun@1.4.4 install --frozen-lockfile
+      - name: Check types
+        run: npm run lint
+      - name: Test application
+        run: npm run test:customer-operations
+      - name: Build preview
+        run: npm run build
+        env:
+          VERCEL_ENV: preview
+      - name: Push verified integration
+        run: git push origin HEAD:dev
